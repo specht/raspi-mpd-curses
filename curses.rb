@@ -351,7 +351,7 @@ class CursesMpdPlayer
                 end
                 @pane_lists[:playlist].add_entry(x['Pos'], ["#{(_+1)}.", x['Title'], s_to_h_m_s(x['Time'])])
             end
-            draw_pane() if @panes[@current_pane] == 'playlist'
+            draw_pane() if @panes[@current_pane] == :playlist
         end
         if data[:from_first] == 'currentsong'
             if data[:data].size == 0

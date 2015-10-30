@@ -8,6 +8,7 @@ require 'socket'
 require 'thread'
 require 'yaml'
 include Curses
+ESCDELAY = 25
 
 def sfix(s)
     return s.to_s.
@@ -384,10 +385,10 @@ class CursesMpdPlayer
         @state[:stats] = nil
 
         # init curses
-        Curses.noecho()
-        Curses.nonl()
-        Curses.cbreak()
         Curses.init_screen()
+        Curses.noecho()
+#         Curses.nonl()
+        Curses.cbreak()
         Curses.start_color()
         @width = Curses.cols
         @height = Curses.lines
@@ -694,7 +695,7 @@ class CursesMpdPlayer
         @win.refresh
     end
 
-    def main_loop
+    def main_loop()
         $current_command_mutex = Mutex.new
         $current_command = []
 
@@ -767,101 +768,115 @@ class CursesMpdPlayer
                 push_command('idle')
             else
                 if rs.include?(STDIN)
-                    x = @win.getch
+                    key = @win.getch
+#                     x = 0
+#                     begin
+#                         STDERR.puts "Got a key: #{key} #{key.ord} (RIGHT == #{key == Curses::Key::RIGHT})"
+#                     rescue
+#                     end
 #                     print " #{x.ord}"
                     no_char = false
-                    @keys.keys.each do |_|
-                        if test_key(_)
-                            no_char = true
-                            break
-                        end
-                    end
-                    if x.ord == 0x1b || x.ord == 0xc3
-                        @key_buffer = []
-                        @key_buffer_start_time = Time.now.to_f
-                    end
-                    @key_buffer << x.ord
-                    if test_key(:arrow_left)
+#                     @keys.keys.each do |_|
+#                         if test_key(_)
+#                             no_char = true
+#                             break
+#                         end
+#                     end
+#                     if x.ord == 0x1b || x.ord == 0xc3
+#                         @key_buffer = []
+#                         @key_buffer_start_time = Time.now.to_f
+#                     end
+#                     @key_buffer << x.ord
+                    if key == Curses::Key::LEFT
                         if @current_pane > 0
                             @current_pane -= 1
                             draw_pane()
                         end
-                    elsif test_key(:arrow_right)
+                    elsif key == Curses::Key::RIGHT
                         if @current_pane < @panes.size - 1
                             @current_pane += 1
                             draw_pane()
                         end
-                    elsif test_key(:arrow_down)
+                    elsif key == Curses::Key::DOWN
                         if @pane_lists.include?(@panes[@current_pane])
                             @pane_lists[@panes[@current_pane]].next_selected()
                             draw_pane()
                         end
-                    elsif test_key(:arrow_up)
+                    elsif key == Curses::Key::UP
                         if @pane_lists.include?(@panes[@current_pane])
                             @pane_lists[@panes[@current_pane]].prev_selected()
                             draw_pane()
                         end
-                    elsif test_key(:page_down)
+                    elsif key == Curses::Key::NPAGE
                         if @pane_lists.include?(@panes[@current_pane])
                             20.times { @pane_lists[@panes[@current_pane]].next_selected() }
                             draw_pane()
                         end
-                    elsif test_key(:page_up)
+                    elsif key == Curses::Key::PPAGE
                         if @pane_lists.include?(@panes[@current_pane])
                             20.times { @pane_lists[@panes[@current_pane]].prev_selected() }
                             draw_pane()
                         end
-                    elsif test_key(:home)
+                    elsif key == Curses::Key::HOME
                         if @pane_lists.include?(@panes[@current_pane])
                             @pane_lists[@panes[@current_pane]].first_selected()
                             draw_pane()
                         end
-                    elsif test_key(:end)
+                    elsif key == Curses::Key::END
                         if @pane_lists.include?(@panes[@current_pane])
                             @pane_lists[@panes[@current_pane]].last_selected()
                             draw_pane()
                         end
-                    elsif test_key(:delete)
+                    elsif key == Curses::Key::DC
                         if @panes[@current_pane] == :playlist && !@pane_lists[@panes[@current_pane]].selected().nil?
                             push_command('noidle')
                             push_command("delete #{@pane_lists[@panes[@current_pane]].selected()[:key]}")
                             push_command('idle')
                         end
-                    end
-                    found_special_char = false
-                    [:ae, :oe, :ue, :AE, :OE, :UE, :sz].each do |_|
-                        if test_key(_)
-                            x = @keys_char[_]
-                            found_special_char = true
-                            break
+                    elsif key.ord == 0x1b
+                        # escape pressed!
+                        if @pane_lists[@panes[@current_pane]].nil? || @pane_lists[@panes[@current_pane]].selected().nil?
+                            @current_pane = 0
+                            draw_pane()
+                        else
+                            @pane_lists[@panes[@current_pane]].set_selected(nil)
+                            draw_pane()
                         end
                     end
+                    found_special_char = false
+#                     [:ae, :oe, :ue, :AE, :OE, :UE, :sz].each do |_|
+#                         if test_key(_)
+#                             x = @keys_char[_]
+#                             found_special_char = true
+#                             break
+#                         end
+#                     end
                     unless no_char
                         if @pane_editfields[@panes[@current_pane]]
                             # this pane has an edit field
-                            if (x.ord >= 0x20 && x.ord < 0x7f) || found_special_char
-                                new_char = sfix(x)
+                            if (key.ord >= 0x20 && key.ord < 0x7f) || found_special_char
+                                new_char = sfix(key)
                                 sfix(new_char).each_char do |c|
                                     @pane_editfields[@panes[@current_pane]].add_char(c)
                                 end
                                 draw_pane()
-                            elsif x.ord == 0x7f
+                            elsif key == Curses::Key::BACKSPACE
                                 @pane_editfields[@panes[@current_pane]].backspace()
                                 draw_pane()
-                            elsif x.ord == 0xd
+                            elsif key.ord == 0xa
                                 chat_socket.puts @pane_editfields[@panes[@current_pane]].string
                                 @pane_editfields[@panes[@current_pane]].clear()
                                 draw_pane()
                             end
                         else
                             # this pane has no edit field, we can use shortcuts here
-                            if x == 's' || x == 'S'
+                            if key == 's' || key == 'S'
                                 if @state[:status]
                                     push_command('noidle')
                                     push_command("random #{1 - @state[:status]['random']}")
                                     push_command('idle')
                                 end
-                            elsif x == 'r' || x == 'R'
+                            elsif key == 'r' || key == 'R'
                                 if @state[:status]
                                     current_code = (~~(@state[:status]['repeat'])) + ((~~(@state[:status]['single'])) << 1);
                                     current_code += 1;
@@ -872,21 +887,21 @@ class CursesMpdPlayer
                                     push_command("single #{(current_code >> 1) & 1}")
                                     push_command('idle')
                                 end
-                            elsif x.ord == 0x20
+                            elsif key.ord == 0x20
                                 push_command('noidle')
                                 push_command('pause')
                                 push_command('idle')
-                            elsif x.ord == 0x2e
+                            elsif key.ord == 0x2e
                                 push_command('noidle')
                                 push_command('previous')
                                 push_command('idle')
                                 @pane_lists[:playlist].set_selected(nil)
-                            elsif x.ord == 0x2d
+                            elsif key.ord == 0x2d
                                 push_command('noidle')
                                 push_command('next')
                                 push_command('idle')
                                 @pane_lists[:playlist].set_selected(nil)
-                            elsif x.ord == 0xd
+                            elsif key.ord == 0xa
                                 if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
                                     if @panes[@current_pane] == :playlist
                                         push_command('noidle')
@@ -909,31 +924,31 @@ class CursesMpdPlayer
                                         push_command('idle')
                                     end
                                 end
-                            elsif x == 'p' || x == 'P' || x == 'a' || x == 'A'
+                            elsif key == 'p' || key == 'P' || key == 'a' || key == 'A'
                                 if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
                                     item = @pane_lists[@panes[@current_pane]].selected()
                                     if item && item[:key]
                                         if item[:key][:file]
                                             url = item[:key][:file]
                                             push_command('noidle')
-                                            if (x == 'p' || x == 'P')
+                                            if (key == 'p' || key == 'P')
                                                 push_command('clear')
                                             end
                                             push_command("add \"#{url}\"")
-                                            if (x == 'p' || x == 'P')
+                                            if (key == 'p' || key == 'P')
                                                 push_command('play')
                                             end
                                             push_command('idle')
-                                            if (x == 'p' || x == 'P')
+                                            if (key == 'p' || key == 'P')
                                                 @current_pane = 0
                                                 draw_pane()
                                             end
                                         elsif item[:key][:playlist]
                                             playlist = item[:key][:playlist]
                                             push_command('noidle')
-                                            push_command("listplaylist \"#{playlist}\"", {:source => :playlists, :command => ((x == 'p' || x == 'P') ? :play : :append)})
+                                            push_command("listplaylist \"#{playlist}\"", {:source => :playlists, :command => ((key == 'p' || key == 'P') ? :play : :append)})
                                             push_command('idle')
-                                            if (x == 'p' || x == 'P')
+                                            if (key == 'p' || key == 'P')
                                                 @current_pane = 0
                                                 draw_pane()
                                             end
@@ -946,9 +961,9 @@ class CursesMpdPlayer
                                             end
                                             if filters.size > 0
                                                 push_command('noidle')
-                                                push_command("find #{filters.map{ |k, v| "#{k} \"#{v}\""}.join(' ')}", {:source => :artist, :command => ((x == 'p' || x == 'P') ? :play : :append)})
+                                                push_command("find #{filters.map{ |k, v| "#{k} \"#{v}\""}.join(' ')}", {:source => :artist, :command => ((key == 'p' || key == 'P') ? :play : :append)})
                                                 push_command('idle')
-                                                if (x == 'p' || x == 'P')
+                                                if (key == 'p' || key == 'P')
                                                     @current_pane = 0
                                                     draw_pane()
                                                 end
@@ -969,15 +984,6 @@ class CursesMpdPlayer
                     s = @rpipe_r.gets
                     if s.strip == '.'
                         draw_spinner()
-                    else
-                        # escape pressed!
-                        if @pane_lists[@panes[@current_pane]].nil? || @pane_lists[@panes[@current_pane]].selected().nil?
-                            @current_pane = 0
-                            draw_pane()
-                        else
-                            @pane_lists[@panes[@current_pane]].set_selected(nil)
-                            draw_pane()
-                        end
                     end
                 end
                 if rs.include?(chat_socket)
@@ -1110,8 +1116,6 @@ class CursesMpdPlayer
                 end
             end
         end
-
-    #     win.getch
 
         mpd_socket.close
     end

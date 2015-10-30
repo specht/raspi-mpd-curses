@@ -10,7 +10,7 @@ require 'yaml'
 include Curses
 
 def sfix(s)
-    s.gsub('ä', 'ae').gsub('ö', 'oe').gsub('ü', 'ue').gsub('Ä', 'AE').gsub('Ö', 'OE').gsub('Ü', 'UE').gsub('ß', 'ss')
+    s.to_s.gsub('ä', 'ae').gsub('ö', 'oe').gsub('ü', 'ue').gsub('Ä', 'AE').gsub('Ö', 'OE').gsub('Ü', 'UE').gsub('ß', 'ss')
 end
 
 def fit(s, width)
@@ -246,7 +246,7 @@ class CursesMpdPlayer
         @last_play_start_time = nil
         @last_play_start_elapsed = nil
 
-        @pane_lists[:playlist] = List.new(@win, @width, @height, 3, @height - 6)
+        @pane_lists[:playlist] = List.new(@win, @width, @height, 3, @height - 7)
         @pane_lists[:artist] = List.new(@win, @width, @height, 3, @height - 1)
         @pane_lists[:album] = List.new(@win, @width, @height, 3, @height - 1)
         draw_pane()
@@ -282,14 +282,8 @@ class CursesMpdPlayer
         end
         (@height - 3).times { @win.addstr(' ' * @width) }
         if @panes[@current_pane] == :playlist
-            @win.attron(color_pair(3) | A_BOLD) do
-                @win.setpos(@height - 5, 0)
-                progress = 10
-                @win.addstr('_' * progress)
-                @win.addstr(' ' * (@width - progress))
-            end
             @win.attron(color_pair(35) | A_BOLD) do
-                @win.setpos(@height - 4, 0)
+                @win.setpos(@height - 5, 0)
                 @win.addstr(' ' * @width)
                 unless @state[:current_song].nil?
                     @win.addstr(fit(" #{@state[:current_song]['Artist']}", @width))
@@ -298,28 +292,15 @@ class CursesMpdPlayer
                     @win.addstr(fit('', @width))
                     @win.addstr(fit('', @width))
                 end
+            end
+            @win.attron(color_pair(32) | A_NORMAL) do
+                @win.addstr(' ' * @width)
+            end
+            @win.attron(color_pair(56) | A_NORMAL) do
                 @win.addstr(' ' * @width)
             end
             # draw playlist
             @pane_lists[:playlist].render()
-#             @win.attron(color_pair(48) | A_NORMAL) do
-#                 @win.setpos(3, 0)
-#                 @win.addstr(sprintf('%-40s', ' Muse - Drones'))
-#             end
-#             @state[:playlist].each_with_index do |x, _|
-#                 is_current_song = false
-#                 unless @state[:current_song].nil?
-#                     is_current_song = (@state[:current_song]['Pos'] == _)
-#                 end
-#                 @win.attron(color_pair(is_current_song ? 2 : 7) | (is_current_song ? A_BOLD : A_NORMAL)) do
-#                     @win.setpos(_ + 4, 0)
-#                     @win.addstr("#{sprintf('%2d.', _ + 1)} #{x['Title']}")
-#                 end
-#                 @win.attron(color_pair(is_current_song ? 2 : 7) | (is_current_song ? A_BOLD : A_NORMAL)) do
-#                     @win.setpos(_ + 4, 34)
-#                     @win.addstr(sprintf('%6s', s_to_h_m_s(x['Time'])))
-#                 end
-#             end
         end
         if @panes[@current_pane] == :artist
             @pane_lists[:artist].render()
@@ -361,7 +342,7 @@ class CursesMpdPlayer
                 @last_play_start_time = Time.now.to_f
                 @last_play_start_elapsed = @state[:status]['elapsed']
             end
-            # STDERR.puts data.to_yaml
+            draw_spinner()
         end
         if data[:from_first] == 'stats'
             @state[:stats] = data[:data]
@@ -434,20 +415,55 @@ class CursesMpdPlayer
     end
 
     def draw_spinner()
+        return if @current_pane != 0
+        t = 0
+        if @state[:status]
+            t = @last_play_start_elapsed
+            t += Time.now.to_f - @last_play_start_time if @state[:status]['state'] == 'play'
+        end
         @spinner_index = (Time.now.to_f * 5.0).to_i
         @spinner_index %= @spinner.size
         @win.attron(color_pair(35) | A_BOLD) do
-            @win.setpos(1, @width - 10)
+            @win.setpos(@height - 4, @width - 4)
             c = @spinner[@spinner_index, 1]
             c = ' ' if @state[:status] && @state[:status]['state'] != 'play'
             @win.addstr("[#{c}]")
-            @win.setpos(@height - 2, @width - 8)
             if @state[:status]
-                t = @last_play_start_elapsed
-                t += Time.now.to_f - @last_play_start_time if @state[:status]['state'] == 'play'
+                @win.setpos(@height - 3, @width - 7)
                 @win.addstr(rfit("#{s_to_h_m_s(t.to_i)}", 6))
             end
         end
+        @win.attron(color_pair(3) | A_BOLD) do
+            @win.setpos(@height - 6, 0)
+            progress = 0
+            if @state[:current_song]
+                progress = (t * @width / @state[:current_song]['Time']).to_i
+                progress = @width if progress > @width
+            end
+            @win.addstr('_' * progress)
+            @win.addstr(' ' * (@width - progress))
+        end
+        if @state[:status]
+            attr = (color_pair(56) | A_BOLD)
+            attr = (color_pair(63) | A_BOLD) if @state[:status]['repeat'] == 1
+            @win.setpos(@height - 1, 1)
+            @win.attron(attr) do
+                @win.addstr((@state[:status]['single'] == 1) ? 'Repeat one' : 'Repeat')
+            end
+            attr = (color_pair(56) | A_BOLD)
+            @win.attron(attr) do
+                @win.addstr(' | ')
+            end
+            attr = (color_pair(63) | A_BOLD) if @state[:status]['random'] == 1
+            @win.attron(attr) do
+                @win.addstr('Shuffle    ')
+            end
+        end
+        @win.attron(color_pair(35) | A_BOLD) do
+            @win.setpos(1, @width - 6)
+            @win.addstr(DateTime.now.strftime('%H:%M'))
+        end
+        @win.setpos(@height - 1, @width - 1)
         @win.refresh
     end
 
@@ -492,24 +508,14 @@ class CursesMpdPlayer
         push_command('currentsong')
         push_command('list artist')
         push_command('list album')
+        push_command('status')
         push_command('idle')
-        last_time_update = Time.now.to_i
-        last_spinner_update = Time.now.to_i
         while true do
-            rs, ws, es = IO.select([STDIN, mpd_socket, @pipe_r, @rpipe_r], [], [], 1)
+            rs, ws, es = IO.select([STDIN, mpd_socket, @pipe_r, @rpipe_r], [], [], 30)
             if rs.nil?
-                now = Time.now.to_i
-                if now - last_time_update > 30
-                    draw_pane()
-                    last_time_update = now
-                    push_command('noidle')
-                    push_command('@ping')
-                    push_command('idle')
-                end
-                if now - last_spinner_update > 0
-                    draw_spinner()
-                    last_spinner_update = now
-                end
+                push_command('noidle')
+                push_command('@ping')
+                push_command('idle')
             else
                 if rs.include?(STDIN)
                     x = @win.getch
@@ -556,6 +562,37 @@ class CursesMpdPlayer
                             @pane_lists[@panes[@current_pane]].last_selected()
                             draw_pane()
                         end
+                    elsif x == 's' || x == 'S'
+                        if @state[:status]
+                            push_command('noidle')
+                            push_command("random #{1 - @state[:status]['random']}")
+                            push_command('idle')
+                        end
+                    elsif x == 'r' || x == 'R'
+# //             // SR
+# //             // 00 0
+# //             // 01 1
+# //             // 10 2
+# //             // 11 3
+# //             var current_code = (~~(state.repeat)) + ((~~(state.single)) << 1);
+# //             current_code += 1;
+# //             if (current_code === 2)
+# //                 current_code = 3;
+# //             if (current_code > 3)
+# //                 current_code = 0;
+# //             state.repeat = (current_code & 1) !== 0;
+# //             state.single = (current_code & 2) !== 0;
+                        if @state[:status]
+                            current_code = (~~(@state[:status]['repeat'])) + ((~~(@state[:status]['single'])) << 1);
+                            current_code += 1;
+                            current_code = 3 if current_code == 2
+                            current_code = 0 if current_code > 3
+                            push_command('noidle')
+                            push_command("repeat #{(current_code) & 1}")
+                            push_command("single #{(current_code >> 1) & 1}")
+                            push_command('idle')
+                        end
+
                     elsif x.ord == 0x20
                         push_command('noidle')
                         push_command('pause')
@@ -691,11 +728,16 @@ class CursesMpdPlayer
                                     # player mixer playlist
                                     if what == 'playlist'
                                         push_command('playlistinfo')
+                                        push_command('currentsong')
                                     end
                                     if what == 'player'
                                         push_command('status')
                                         push_command('currentsong')
                                     end
+                                    if what == 'options'
+                                        push_command('status')
+                                    end
+#                                     puts what
                                 end
                             end
                             push_command('idle')

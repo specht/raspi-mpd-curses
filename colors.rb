@@ -1,4 +1,22 @@
 #!/usr/bin/env ruby
+
+# require 'curses'
+#
+# Curses::init_screen
+# w = Curses::Window.new 20,60,0,0
+# w.box ?|, ?-
+# w.keypad true
+# chr = w.getch
+# w.setpos 2,4
+# w.addstr %q{Caught enter} if chr == Curses::Key::ENTER
+# w.addstr %q{Caught LEFT} if chr == Curses::Key::LEFT
+# # w.addstr %q{Caught "\n"} if chr.chr == "\n"
+# w.refresh
+# w.getch
+# Curses::close_screen
+#
+# __END__
+
 require 'curses'
 require 'json'
 # require 'ncurses'
@@ -20,13 +38,12 @@ def s_to_h_m_s(s)
 end
 
 begin
-    Curses.noecho()
-    Curses.nonl()
-#     Curses.raw()
-    Curses.cbreak()
-    Curses.stdscr.nodelay = 1
-    Curses.stdscr.keypad(true)
+    Curses.noecho
     Curses.init_screen()
+#     Curses.nonl()
+    Curses.raw()
+    Curses.cbreak
+#     Curses.stdscr.nodelay = 1
     Curses.start_color()
     (0..7).each do |y|
         (0..7).each do |x|
@@ -35,6 +52,7 @@ begin
     end
 
     win = Curses::Window.new(HEIGHT, WIDTH, 0, 0)
+    win.keypad = true
 #     win.box(0, 0)
     win.setpos(0, 0)
 
@@ -129,7 +147,7 @@ begin
             if rs.include?(STDIN)
                 x = win.getch
 #                 if x == Curses::Key::RIGHT
-                    print " 0x#{x.ord.to_s(16)}"
+                    print "0x#{x.ord.to_s(16)}"
 #                 end
             end
             if rs.include?(pipe_r)

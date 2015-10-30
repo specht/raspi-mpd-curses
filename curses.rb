@@ -96,22 +96,24 @@ class List
         return if @first_selectable_entry.nil?
         @selected_entry = @highlighted_entry if @selected_entry.nil?
         @selected_entry ||= 0
-        begin
+        while true
             set_selected(@selected_entry + 1)
-        end until @selected_entry.nil? || [:entry, :chat_entry].include?(@entries[@selected_entry][:type])
+            break if @selected_entry.nil?
+            break if @entries[@selected_entry].nil?
+            break if [:entry, :chat_entry].include?(@entries[@selected_entry][:type])
+        end
     end
 
     def prev_selected()
         return if @first_selectable_entry.nil?
         @selected_entry = @highlighted_entry if @selected_entry.nil?
         @selected_entry ||= 0
-        begin
-#             if @selected_entry == 0
-#                 set_selected(nil)
-#             else
-                set_selected(@selected_entry - 1)
-#             end
-        end until @selected_entry.nil? || [:entry, :chat_entry].include?(@entries[@selected_entry][:type])
+        while true
+            set_selected(@selected_entry - 1)
+            break if @selected_entry.nil?
+            break if @entries[@selected_entry].nil?
+            break if [:entry, :chat_entry].include?(@entries[@selected_entry][:type])
+        end
     end
 
     def first_selected()
@@ -239,6 +241,39 @@ class List
     end
 end
 
+class EditField
+    def initialize(win, width, height)
+        @win = win
+        @width = width
+        @height = height
+        @string = ''
+    end
+
+    attr_reader :string
+
+    def add_char(c)
+        @string += c
+    end
+
+    def backspace()
+        return if @string.empty?
+        @string = @string[0, @string.size - 1]
+    end
+
+    def clear()
+        @string = ''
+    end
+
+    def render()
+        @win.attron(color_pair(39) | A_BOLD) do
+            @win.setpos(@height - 1, 0)
+            @win.addstr(' > ')
+            @win.addstr(fit(@string, @width - 3))
+        end
+    end
+
+end
+
 class CursesMpdPlayer
 
     class ScrollLabel
@@ -307,6 +342,23 @@ class CursesMpdPlayer
         @keys[:home]        = [0x1b, 0x5b, 0x31, 0x7e]
         @keys[:end]         = [0x1b, 0x5b, 0x34, 0x7e]
         @keys[:delete]      = [0x1b, 0x5b, 0x33, 0x7e]
+        @keys[:ae]          = [0xc3, 0xa4]
+        @keys[:oe]          = [0xc3, 0xb6]
+        @keys[:ue]          = [0xc3, 0xbc]
+        @keys[:AE]          = [0xc3, 0x84]
+        @keys[:OE]          = [0xc3, 0x96]
+        @keys[:UE]          = [0xc3, 0x9c]
+        @keys[:sz]          = [0xc3, 0x9f]
+
+        @keys_char = {}
+        @keys_char[:ae]     = 'ä'
+        @keys_char[:oe]     = 'ö'
+        @keys_char[:ue]     = 'ü'
+        @keys_char[:AE]     = 'Ä'
+        @keys_char[:OE]     = 'Ö'
+        @keys_char[:UE]     = 'Ü'
+        @keys_char[:sz]     = 'ß'
+
         @key_buffer = []
         @key_buffer_start_time = Time.now.to_f
 
@@ -324,6 +376,7 @@ class CursesMpdPlayer
         @current_pane = 0
         @pane_lists = {}
         @pane_sublists = {}
+        @pane_editfields = {}
 
         @state = {}
         @state[:playlist] = []
@@ -334,8 +387,6 @@ class CursesMpdPlayer
         Curses.noecho()
         Curses.nonl()
         Curses.cbreak()
-        Curses.stdscr.nodelay = 1
-        Curses.stdscr.keypad(true)
         Curses.init_screen()
         Curses.start_color()
         @width = Curses.cols
@@ -352,7 +403,9 @@ class CursesMpdPlayer
 
         # init window
         @win = Curses::Window.new(@height, @width, 0, 0)
-        
+        @win.nodelay = 1
+        @win.keypad = true
+
         @spinner = '/-\\|'
         @spinner_index = 0
         @last_play_start_time = nil
@@ -366,6 +419,7 @@ class CursesMpdPlayer
         @pane_lists[:radio].add_entry({:file => 'http://kiraka.akacast.akamaistream.net/7/285/119443/v1/gnl.akacast.akamaistream.net/kiraka'}, 'KiRaKa')
         @pane_lists[:radio].add_entry({:file => 'http://rbb-mp3-radioeins-m.akacast.akamaistream.net/7/854/292097/v1/gnl.akacast.akamaistream.net/rbb_mp3_radioeins_m'}, 'radio eins')
         @pane_lists[:chat] = List.new(@win, @width, @height, 3, @height - 2)
+        @pane_editfields[:chat] = EditField.new(@win, @width, @height)
 
         @artist_label = ScrollLabel.new(@width - 8)
         @title_label = ScrollLabel.new(@width - 8)
@@ -417,12 +471,7 @@ class CursesMpdPlayer
                 @win.addstr('A')
             end
         end
-        if @panes[@current_pane] == :chat
-            @win.attron(color_pair(39) | A_BOLD) do
-                @win.setpos(@height - 1, 0)
-                @win.addstr(' ' * @width)
-            end
-        end
+        @pane_editfields[@panes[@current_pane]].render() if @pane_editfields[@panes[@current_pane]]
         draw_spinner()
         @win.refresh
         @win.setpos(@height - 1, @width - 1)
@@ -545,7 +594,7 @@ class CursesMpdPlayer
 
     def draw_spinner()
         # handle escape key first
-        if @key_buffer.size == 1 && Time.now.to_f - @key_buffer_start_time > 0.05
+        if @key_buffer.size == 1 && Time.now.to_f - @key_buffer_start_time > 0.1
             @key_buffer = []
             @rpipe_w.puts("E")
         end
@@ -720,7 +769,14 @@ class CursesMpdPlayer
                 if rs.include?(STDIN)
                     x = @win.getch
 #                     print " #{x.ord}"
-                    if x.ord == 27
+                    no_char = false
+                    @keys.keys.each do |_|
+                        if test_key(_)
+                            no_char = true
+                            break
+                        end
+                    end
+                    if x.ord == 0x1b || x.ord == 0xc3
                         @key_buffer = []
                         @key_buffer_start_time = Time.now.to_f
                     end
@@ -771,116 +827,132 @@ class CursesMpdPlayer
                             push_command("delete #{@pane_lists[@panes[@current_pane]].selected()[:key]}")
                             push_command('idle')
                         end
-                    elsif x == 's' || x == 'S'
-                        if @state[:status]
-                            push_command('noidle')
-                            push_command("random #{1 - @state[:status]['random']}")
-                            push_command('idle')
+                    end
+                    found_special_char = false
+                    [:ae, :oe, :ue, :AE, :OE, :UE, :sz].each do |_|
+                        if test_key(_)
+                            x = @keys_char[_]
+                            found_special_char = true
+                            break
                         end
-                    elsif x == 'r' || x == 'R'
-# //             // SR
-# //             // 00 0
-# //             // 01 1
-# //             // 10 2
-# //             // 11 3
-# //             var current_code = (~~(state.repeat)) + ((~~(state.single)) << 1);
-# //             current_code += 1;
-# //             if (current_code === 2)
-# //                 current_code = 3;
-# //             if (current_code > 3)
-# //                 current_code = 0;
-# //             state.repeat = (current_code & 1) !== 0;
-# //             state.single = (current_code & 2) !== 0;
-                        if @state[:status]
-                            current_code = (~~(@state[:status]['repeat'])) + ((~~(@state[:status]['single'])) << 1);
-                            current_code += 1;
-                            current_code = 3 if current_code == 2
-                            current_code = 0 if current_code > 3
-                            push_command('noidle')
-                            push_command("repeat #{(current_code) & 1}")
-                            push_command("single #{(current_code >> 1) & 1}")
-                            push_command('idle')
-                        end
-
-                    elsif x.ord == 0x20
-                        push_command('noidle')
-                        push_command('pause')
-                        push_command('idle')
-                    elsif x.ord == 0x2e
-                        push_command('noidle')
-                        push_command('previous')
-                        push_command('idle')
-                        @pane_lists[:playlist].set_selected(nil)
-                    elsif x.ord == 0x2f
-                        push_command('noidle')
-                        push_command('next')
-                        push_command('idle')
-                        @pane_lists[:playlist].set_selected(nil)
-                    elsif x.ord == 0xd
-                        if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
-                            if @panes[@current_pane] == :playlist
-                                push_command('noidle')
-                                push_command("play #{@pane_lists[@panes[@current_pane]].selected()[:key]}")
-                                push_command('idle')
-                                @pane_lists[@panes[@current_pane]].set_selected(nil)
+                    end
+                    unless no_char
+                        if @pane_editfields[@panes[@current_pane]]
+                            # this pane has an edit field
+                            if (x.ord >= 0x20 && x.ord < 0x7f) || found_special_char
+                                new_char = sfix(x)
+                                sfix(new_char).each_char do |c|
+                                    @pane_editfields[@panes[@current_pane]].add_char(c)
+                                end
+                                draw_pane()
+                            elsif x.ord == 0x7f
+                                @pane_editfields[@panes[@current_pane]].backspace()
+                                draw_pane()
+                            elsif x.ord == 0xd
+                                chat_socket.puts @pane_editfields[@panes[@current_pane]].string
+                                @pane_editfields[@panes[@current_pane]].clear()
+                                draw_pane()
                             end
-                            if @panes[@current_pane] == :artist
-                                filter_artist = @pane_lists[@panes[@current_pane]].selected()[:key][:artist]
-                                push_command('noidle')
-                                push_command("list album artist \"#{filter_artist}\"", {:source => :artist, :target => :album, :artist => filter_artist})
-                                push_command("list title artist \"#{filter_artist}\"", {:source => :artist, :target => :title, :artist => filter_artist})
-                                push_command('idle')
-                            end
-                            if @panes[@current_pane] == :album
-                                filter_album = @pane_lists[@panes[@current_pane]].selected()[:key][:album]
-                                push_command('noidle')
-                                push_command("list artist album \"#{filter_album}\"", {:source => :album, :target => :artist, :album => filter_album})
-                                push_command("list title album \"#{filter_album}\"", {:source => :album, :target => :title, :album => filter_album})
-                                push_command('idle')
-                            end
-                        end
-                    elsif x == 'p' || x == 'P' || x == 'a' || x == 'A'
-                        if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
-                            item = @pane_lists[@panes[@current_pane]].selected()
-                            if item[:key]
-                                if item[:key][:file]
-                                    url = item[:key][:file]
+                        else
+                            # this pane has no edit field, we can use shortcuts here
+                            if x == 's' || x == 'S'
+                                if @state[:status]
                                     push_command('noidle')
-                                    if (x == 'p' || x == 'P')
-                                        push_command('clear')
-                                    end
-                                    push_command("add \"#{url}\"")
-                                    if (x == 'p' || x == 'P')
-                                        push_command('play')
-                                    end
+                                    push_command("random #{1 - @state[:status]['random']}")
                                     push_command('idle')
-                                    if (x == 'p' || x == 'P')
-                                        @current_pane = 0
-                                        draw_pane()
-                                    end
-                                elsif item[:key][:playlist]
-                                    playlist = item[:key][:playlist]
+                                end
+                            elsif x == 'r' || x == 'R'
+                                if @state[:status]
+                                    current_code = (~~(@state[:status]['repeat'])) + ((~~(@state[:status]['single'])) << 1);
+                                    current_code += 1;
+                                    current_code = 3 if current_code == 2
+                                    current_code = 0 if current_code > 3
                                     push_command('noidle')
-                                    push_command("listplaylist \"#{playlist}\"", {:source => :playlists, :command => ((x == 'p' || x == 'P') ? :play : :append)})
+                                    push_command("repeat #{(current_code) & 1}")
+                                    push_command("single #{(current_code >> 1) & 1}")
                                     push_command('idle')
-                                    if (x == 'p' || x == 'P')
-                                        @current_pane = 0
-                                        draw_pane()
-                                    end
-                                else
-                                    filters = {}
-                                    [:artist, :album, :title].each do |key|
-                                        if item[:key].include?(key)
-                                            filters[key] = item[:key][key]
-                                        end
-                                    end
-                                    if filters.size > 0
+                                end
+                            elsif x.ord == 0x20
+                                push_command('noidle')
+                                push_command('pause')
+                                push_command('idle')
+                            elsif x.ord == 0x2e
+                                push_command('noidle')
+                                push_command('previous')
+                                push_command('idle')
+                                @pane_lists[:playlist].set_selected(nil)
+                            elsif x.ord == 0x2d
+                                push_command('noidle')
+                                push_command('next')
+                                push_command('idle')
+                                @pane_lists[:playlist].set_selected(nil)
+                            elsif x.ord == 0xd
+                                if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
+                                    if @panes[@current_pane] == :playlist
                                         push_command('noidle')
-                                        push_command("find #{filters.map{ |k, v| "#{k} \"#{v}\""}.join(' ')}", {:source => :artist, :command => ((x == 'p' || x == 'P') ? :play : :append)})
+                                        push_command("play #{@pane_lists[@panes[@current_pane]].selected()[:key]}")
                                         push_command('idle')
-                                        if (x == 'p' || x == 'P')
-                                            @current_pane = 0
-                                            draw_pane()
+                                        @pane_lists[@panes[@current_pane]].set_selected(nil)
+                                    end
+                                    if @panes[@current_pane] == :artist
+                                        filter_artist = @pane_lists[@panes[@current_pane]].selected()[:key][:artist]
+                                        push_command('noidle')
+                                        push_command("list album artist \"#{filter_artist}\"", {:source => :artist, :target => :album, :artist => filter_artist})
+                                        push_command("list title artist \"#{filter_artist}\"", {:source => :artist, :target => :title, :artist => filter_artist})
+                                        push_command('idle')
+                                    end
+                                    if @panes[@current_pane] == :album
+                                        filter_album = @pane_lists[@panes[@current_pane]].selected()[:key][:album]
+                                        push_command('noidle')
+                                        push_command("list artist album \"#{filter_album}\"", {:source => :album, :target => :artist, :album => filter_album})
+                                        push_command("list title album \"#{filter_album}\"", {:source => :album, :target => :title, :album => filter_album})
+                                        push_command('idle')
+                                    end
+                                end
+                            elsif x == 'p' || x == 'P' || x == 'a' || x == 'A'
+                                if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
+                                    item = @pane_lists[@panes[@current_pane]].selected()
+                                    if item && item[:key]
+                                        if item[:key][:file]
+                                            url = item[:key][:file]
+                                            push_command('noidle')
+                                            if (x == 'p' || x == 'P')
+                                                push_command('clear')
+                                            end
+                                            push_command("add \"#{url}\"")
+                                            if (x == 'p' || x == 'P')
+                                                push_command('play')
+                                            end
+                                            push_command('idle')
+                                            if (x == 'p' || x == 'P')
+                                                @current_pane = 0
+                                                draw_pane()
+                                            end
+                                        elsif item[:key][:playlist]
+                                            playlist = item[:key][:playlist]
+                                            push_command('noidle')
+                                            push_command("listplaylist \"#{playlist}\"", {:source => :playlists, :command => ((x == 'p' || x == 'P') ? :play : :append)})
+                                            push_command('idle')
+                                            if (x == 'p' || x == 'P')
+                                                @current_pane = 0
+                                                draw_pane()
+                                            end
+                                        else
+                                            filters = {}
+                                            [:artist, :album, :title].each do |key|
+                                                if item[:key].include?(key)
+                                                    filters[key] = item[:key][key]
+                                                end
+                                            end
+                                            if filters.size > 0
+                                                push_command('noidle')
+                                                push_command("find #{filters.map{ |k, v| "#{k} \"#{v}\""}.join(' ')}", {:source => :artist, :command => ((x == 'p' || x == 'P') ? :play : :append)})
+                                                push_command('idle')
+                                                if (x == 'p' || x == 'P')
+                                                    @current_pane = 0
+                                                    draw_pane()
+                                                end
+                                            end
                                         end
                                     end
                                 end
@@ -1046,6 +1118,5 @@ class CursesMpdPlayer
 
 end
 
-STDERR.puts "Ahoy!"
 player = CursesMpdPlayer.new
 player.main_loop

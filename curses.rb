@@ -10,7 +10,7 @@ require 'yaml'
 include Curses
 
 def sfix(s)
-    s.to_s.gsub('ä', 'ae').gsub('ö', 'oe').gsub('ü', 'ue').gsub('Ä', 'Ae').gsub('Ö', 'Oe').gsub('Ü', 'Ue').gsub('ß', 'ss')
+    return s.to_s.gsub('ä', 'ae').gsub('ö', 'oe').gsub('ü', 'ue').gsub('Ä', 'Ae').gsub('Ö', 'Oe').gsub('Ü', 'Ue').gsub('ß', 'ss')
 end
 
 def fit(s, width)
@@ -200,12 +200,13 @@ class CursesMpdPlayer
         end
 
         def set_label(label)
-            return if label == @label
+            fixed_label = sfix(label)
+            return if fixed_label == @label
             @old_label_screenshot = scroll_string(@label, @width, @start_time)
             @old_label_screenshot[@width - 1] = ' '
             @old_label_screenshot[@width - 2] = ' '
             @old_label = @label
-            @label = label
+            @label = fixed_label
             @start_time = Time.now.to_f
         end
 
@@ -503,15 +504,17 @@ class CursesMpdPlayer
                 @win.addstr(rfit(s_to_h_m_s(t.to_i) + ' ', 7))
             end
         end
+        @win.setpos(@height - 6, 0)
+        progress = 0
+        if @state[:current_song]
+            progress = (t * @width / @state[:current_song]['Time']).to_i
+            progress = @width if progress > @width
+        end
         @win.attron(color_pair(6) | A_BOLD) do
-            @win.setpos(@height - 6, 0)
-            progress = 0
-            if @state[:current_song]
-                progress = (t * @width / @state[:current_song]['Time']).to_i
-                progress = @width if progress > @width
-            end
             @win.addstr('_' * progress)
-            @win.addstr(' ' * (@width - progress))
+        end
+        @win.attron(color_pair(6) | A_NORMAL) do
+            @win.addstr('_' * (@width - progress))
         end
         @win.attron(color_pair(32) | A_NORMAL) do
             @win.setpos(@height - 2, 0)

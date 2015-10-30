@@ -331,13 +331,13 @@ class CursesMpdPlayer
         end
         start_x = (@current_pane * @width) / @panes.size
         end_x = ((@current_pane + 1) * @width) / @panes.size
-        @win.attron(color_pair(39) | A_NORMAL) do
+        @win.attron(color_pair(38) | A_NORMAL) do
             @win.addstr('_' * start_x)
         end
         @win.attron(color_pair(35) | A_BOLD) do
             @win.addstr('_' * (end_x - start_x))
         end
-        @win.attron(color_pair(39) | A_NORMAL) do
+        @win.attron(color_pair(38) | A_NORMAL) do
             @win.addstr('_' * (@width - end_x))
         end
         (@height - 3).times { @win.addstr(' ' * @width) }
@@ -396,7 +396,9 @@ class CursesMpdPlayer
 
             artist_and_album = nil
             @state[:playlist].each_with_index do |x, _|
-                new_artist_and_album = "#{x['Artist']} - #{x['Album']}"
+                artist = x['AlbumArtist']
+                artist ||= x['Artist']
+                new_artist_and_album = "#{artist} - #{x['Album']}"
                 if new_artist_and_album != artist_and_album
                     @pane_lists[:playlist].add_separator(new_artist_and_album)
                     artist_and_album = new_artist_and_album

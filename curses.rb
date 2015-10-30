@@ -98,7 +98,7 @@ class List
         @selected_entry ||= 0
         begin
             set_selected(@selected_entry + 1)
-        end until @selected_entry.nil? || @entries[@selected_entry][:type] == :entry
+        end until @selected_entry.nil? || [:entry, :chat_entry].include?(@entries[@selected_entry][:type])
     end
 
     def prev_selected()
@@ -111,7 +111,7 @@ class List
 #             else
                 set_selected(@selected_entry - 1)
 #             end
-        end until @selected_entry.nil? || @entries[@selected_entry][:type] == :entry
+        end until @selected_entry.nil? || [:entry, :chat_entry].include?(@entries[@selected_entry][:type])
     end
 
     def first_selected()
@@ -142,6 +142,37 @@ class List
             if x.size > @max_widths[_]
                 @max_widths[_] = x.size
             end
+        end
+    end
+
+    def wordwrap(s, length)
+        @wordwrap_regex ||= Regexp.new('.{1,' + length.to_s + '}(?:\s|\Z)')
+        s.gsub(/\t/,"     ").gsub(@wordwrap_regex){($& + 5.chr).gsub(/\n\005/,"\n").gsub(/\005/,"\n")}
+    end
+
+    def add_chat_entry(entry)
+        entry['name'] = sfix(entry['name'])
+        entry['message'] = sfix(entry['message'])
+        @first_selectable_entry ||= @entries.size
+        @last_selectable_entry = @entries.size
+        print_name = true
+        if (!@entries.empty?) && (@entries.last[:entry]['name'] == entry['name'])
+            print_name = false
+        end
+        complete_line = ''
+        if print_name
+            complete_line += "#{entry['name']}: "
+        end
+        complete_line += entry['message']
+        lines = wordwrap(complete_line, @width).split("\n")
+        lines.each_with_index do |line, _|
+            new_entry = {:type => :chat_entry, :entry => entry, :line => line}
+            new_entry[:highlight] = entry['name'].size + 1 if print_name && _ == 0
+            @entries << new_entry
+        end
+        last_selected()
+        while @entries.size > @yh
+            @entries.shift
         end
     end
 
@@ -177,6 +208,19 @@ class List
                         else
                             s += fit(entry[:labels][0], @width)
                         end
+                        @win.addstr(s)
+                    end
+                elsif entry[:type] == :chat_entry
+                    s = fit(entry[:line], @width)
+                    cut = 0
+                    if entry[:highlight]
+                        @win.attron(color_pair(entry[:entry]['color']) | A_BOLD) do
+                            @win.addstr(s[0, entry[:highlight]])
+                            cut = entry[:highlight]
+                        end
+                    end
+                    @win.attron(color_pair(6) | A_NORMAL) do
+                        s = fit(entry[:line][cut, entry[:line].size - cut], @width - cut)
                         @win.addstr(s)
                     end
                 else
@@ -321,6 +365,7 @@ class CursesMpdPlayer
         @pane_lists[:radio] = List.new(@win, @width, @height, 3, @height - 2)
         @pane_lists[:radio].add_entry({:file => 'http://kiraka.akacast.akamaistream.net/7/285/119443/v1/gnl.akacast.akamaistream.net/kiraka'}, 'KiRaKa')
         @pane_lists[:radio].add_entry({:file => 'http://rbb-mp3-radioeins-m.akacast.akamaistream.net/7/854/292097/v1/gnl.akacast.akamaistream.net/rbb_mp3_radioeins_m'}, 'radio eins')
+        @pane_lists[:chat] = List.new(@win, @width, @height, 3, @height - 2)
 
         @artist_label = ScrollLabel.new(@width - 8)
         @title_label = ScrollLabel.new(@width - 8)
@@ -361,11 +406,11 @@ class CursesMpdPlayer
         @pane_lists[@panes[@current_pane]].render() if @pane_lists[@panes[@current_pane]]
         if @panes[@current_pane] == :artist || @panes[@current_pane] == :album ||
            @panes[@current_pane] == :playlists || @panes[@current_pane] == :radio
-            @win.attron(color_pair(56) | A_BOLD) do
+            @win.attron(color_pair(9) | A_BOLD) do
                 @win.setpos(@height - 1, 0)
                 @win.addstr(fit(' Play | Append', @width))
             end
-            @win.attron(color_pair(63) | A_BOLD) do
+            @win.attron(color_pair(15) | A_BOLD) do
                 @win.setpos(@height - 1, 1)
                 @win.addstr('P')
                 @win.setpos(@height - 1, 8)
@@ -373,19 +418,6 @@ class CursesMpdPlayer
             end
         end
         if @panes[@current_pane] == :chat
-            @win.attron(color_pair(5) | A_BOLD) do
-                @win.setpos(3, 0)
-                @win.addstr('Charlotte: ')
-            end
-            @win.attron(color_pair(7) | A_NORMAL) do
-                @win.addstr("Hallo!\n")
-            end
-            @win.attron(color_pair(2) | A_BOLD) do
-                @win.addstr('Leo: ')
-            end
-            @win.attron(color_pair(7) | A_NORMAL) do
-                @win.addstr("Was?!\n")
-            end
             @win.attron(color_pair(39) | A_BOLD) do
                 @win.setpos(@height - 1, 0)
                 @win.addstr(' ' * @width)
@@ -579,24 +611,25 @@ class CursesMpdPlayer
         end
         if @state[:status]
             x = 0
-            attr = (color_pair(56) | A_BOLD)
+            attr = (color_pair(9) | A_BOLD)
             @win.setpos(@height - 1, 0)
             @win.attron(attr) do
                 @win.addstr(' ')
             end
-            attr = (color_pair(56) | A_BOLD)
-            attr = (color_pair(63) | A_BOLD) if @state[:status]['repeat'] == 1
+            attr = (color_pair(9) | A_BOLD)
+            attr = (color_pair(15) | A_BOLD) if @state[:status]['repeat'] == 1
             @win.attron(attr) do
                 s = (@state[:status]['single'] == 1) ? 'Repeat one' : 'Repeat'
                 @win.addstr(s)
                 x += s.size + 1
             end
-            attr = (color_pair(56) | A_BOLD)
+            attr = (color_pair(9) | A_BOLD)
             @win.attron(attr) do
                 @win.addstr(' | ')
                 x += 3
             end
-            attr = (color_pair(63) | A_BOLD) if @state[:status]['random'] == 1
+            attr = (color_pair(9) | A_BOLD)
+            attr = (color_pair(15) | A_BOLD) if @state[:status]['random'] == 1
             @win.attron(attr) do
                 s = 'Shuffle    '
                 @win.addstr(s)
@@ -623,6 +656,20 @@ class CursesMpdPlayer
         mpd_socket = TCPSocket.new('127.0.0.1', 6600)
         mpd_socket.set_encoding('UTF-8')
         response = mpd_socket.gets
+
+        chat_socket = TCPSocket.new('192.168.106.42', 3000)
+        chat_socket.set_encoding('UTF-8')
+        chat_name = 'Anon'
+        chat_color = 7
+        begin
+            info = YAML::load_file('config.yaml')
+            chat_name = info['name']
+            chat_color = info['color']
+        rescue
+        end
+        chat_socket.puts({:name => chat_name, :color => chat_color}.to_json)
+        chat_socket.puts('@@context')
+
         # puts response
 
         def push_command(command, options = {})
@@ -664,7 +711,7 @@ class CursesMpdPlayer
         push_command('list album')
         push_command('idle')
         while true do
-            rs, ws, es = IO.select([STDIN, mpd_socket, @pipe_r, @rpipe_r], [], [], 30)
+            rs, ws, es = IO.select([STDIN, mpd_socket, chat_socket, @pipe_r, @rpipe_r], [], [], 30)
             if rs.nil?
                 push_command('noidle')
                 push_command('@ping')
@@ -857,6 +904,23 @@ class CursesMpdPlayer
                             draw_pane()
                         else
                             @pane_lists[@panes[@current_pane]].set_selected(nil)
+                            draw_pane()
+                        end
+                    end
+                end
+                if rs.include?(chat_socket)
+                    s = JSON.parse(chat_socket.gets)
+                    if s.class == Array
+                        # it's the chat history
+                        s.each do |entry|
+                            @pane_lists[:chat].add_chat_entry(entry)
+                        end
+                        if @panes[@current_pane] == :chat
+                            draw_pane()
+                        end
+                    else
+                        @pane_lists[:chat].add_chat_entry(s)
+                        if @panes[@current_pane] == :chat
                             draw_pane()
                         end
                     end

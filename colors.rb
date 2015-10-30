@@ -56,6 +56,11 @@ begin
             win.addstr(" #{sprintf('%2d', x)} ")
         end
     end
+    (32..127).each do |y|
+        win.attron(0 | A_ALTCHARSET) do
+            win.addstr(y.chr)
+        end
+    end
     win.refresh
 
     def handle_message(win, data)

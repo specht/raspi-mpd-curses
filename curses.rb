@@ -2,13 +2,19 @@
 require 'curses'
 require 'date'
 require 'json'
+require 'openssl'
 require 'pry'
 require 'set'
 require 'socket'
 require 'thread'
+require 'uri'
 require 'yaml'
 include Curses
 ESCDELAY = 25
+
+# Berlin Steglitz-Zehlendorf: 7290245
+# API key: 956465b12517b778dc896eacbc4c9593
+OPENWEATHERMAP_API_KEY = '956465b12517b778dc896eacbc4c9593'
 
 def sfix(s)
     return s.to_s.
@@ -19,7 +25,8 @@ def sfix(s)
         gsub('é', 'e').gsub('è', 'e').gsub('ê', 'e').gsub('É', 'E').gsub('È', 'E').gsub('Ê', 'E').
         gsub('í', 'i').gsub('ì', 'i').gsub('î', 'i').gsub('Í', 'I').gsub('Ì', 'I').gsub('Î', 'I').
         gsub('ó', 'o').gsub('ò', 'o').gsub('ô', 'o').gsub('Ó', 'O').gsub('Ò', 'O').gsub('Ô', 'O').
-        gsub('ú', 'p').gsub('ù', 'u').gsub('û', 'u').gsub('Ú', 'U').gsub('Ù', 'U').gsub('Û', 'U')
+        gsub('ú', 'p').gsub('ù', 'u').gsub('û', 'u').gsub('Ú', 'U').gsub('Ù', 'U').gsub('Û', 'U').
+        gsub('„', '"').gsub('“', '"')
 end
 
 def fit(s, width)
@@ -43,6 +50,18 @@ class List
         @y1 = y1
         @yh = y1 - y0 + 1
         clear()
+    end
+
+    def add_colon()
+        @add_colon = true
+    end
+
+    def stay_on_top_of_list()
+        @stay_on_top_of_list = true
+    end
+
+    def keep_all()
+        @keep_all = true
     end
 
     def clear()
@@ -154,17 +173,22 @@ class List
     end
 
     def add_chat_entry(entry)
+        if @stay_on_top_of_list
+            return if @entries.size >= @yh
+        end
         entry['name'] = sfix(entry['name'])
         entry['message'] = sfix(entry['message'])
         @first_selectable_entry ||= @entries.size
         @last_selectable_entry = @entries.size
         print_name = true
-        if (!@entries.empty?) && (@entries.last[:entry]['name'] == entry['name'])
+        if (!@entries.empty?) && @entries.last[:entry] && (@entries.last[:entry]['name'] == entry['name'])
             print_name = false
         end
         complete_line = ''
         if print_name
-            complete_line += "#{entry['name']}: "
+            complete_line += entry['name']
+            complete_line += ':' if @add_colon
+            complete_line += ' '
         end
         complete_line += entry['message']
         lines = wordwrap(complete_line, @width).split("\n")
@@ -173,9 +197,15 @@ class List
             new_entry[:highlight] = entry['name'].size + 1 if print_name && _ == 0
             @entries << new_entry
         end
-        last_selected()
-        while @entries.size > @yh
-            @entries.shift
+        unless @keep_all
+            while @entries.size > @yh
+                @entries.shift
+            end
+        end
+        if @stay_on_top_of_list
+            first_selected()
+        else
+            last_selected()
         end
     end
 
@@ -217,7 +247,7 @@ class List
                     s = fit(entry[:line], @width)
                     cut = 0
                     if entry[:highlight]
-                        @win.attron(color_pair(entry[:entry]['color']) | A_BOLD) do
+                        @win.attron(color_pair(entry[:entry]['color'] || 7) | A_BOLD) do
                             @win.addstr(s[0, entry[:highlight]])
                             cut = entry[:highlight]
                         end
@@ -363,7 +393,7 @@ class CursesMpdPlayer
         @key_buffer = []
         @key_buffer_start_time = Time.now.to_f
 
-        @panes = [:playlist, :search, :artist, :album, :playlists, :radio, :chat, :status]
+        @panes = [:playlist, :search, :artist, :album, :playlists, :radio, :chat, :wikipedia, :weather, :status]
         @pane_titles = {
             :playlist => 'Currently playing',
             :search => 'Search',
@@ -372,6 +402,8 @@ class CursesMpdPlayer
             :playlists => 'Playlists',
             :radio => 'Radio',
             :chat => 'Chat',
+            :wikipedia => 'Wikipedia',
+            :weather => 'Weather',
             :status => 'Status'
         }
         @current_pane = 0
@@ -420,7 +452,14 @@ class CursesMpdPlayer
         @pane_lists[:radio].add_entry({:file => 'http://kiraka.akacast.akamaistream.net/7/285/119443/v1/gnl.akacast.akamaistream.net/kiraka'}, 'KiRaKa')
         @pane_lists[:radio].add_entry({:file => 'http://rbb-mp3-radioeins-m.akacast.akamaistream.net/7/854/292097/v1/gnl.akacast.akamaistream.net/rbb_mp3_radioeins_m'}, 'radio eins')
         @pane_lists[:chat] = List.new(@win, @width, @height, 3, @height - 2)
+        @pane_lists[:chat].add_colon()
+        @pane_lists[:wikipedia] = List.new(@win, @width, @height, 3, @height - 2)
+        @pane_lists[:wikipedia].keep_all()
+        @pane_lists[:weather] = List.new(@win, @width, @height, 3, @height - 2)
+        @pane_lists[:weather].stay_on_top_of_list()
         @pane_editfields[:chat] = EditField.new(@win, @width, @height)
+        @pane_editfields[:wikipedia] = EditField.new(@win, @width, @height)
+        @pane_editfields[:weather] = EditField.new(@win, @width, @height)
 
         @artist_label = ScrollLabel.new(@width - 8)
         @title_label = ScrollLabel.new(@width - 8)
@@ -695,6 +734,64 @@ class CursesMpdPlayer
         @win.refresh
     end
 
+    def handle_weather_update()
+        if @weather_socket.eof?
+            @weather_socket.close
+            @weather_socket = nil
+        else
+            response = @weather_socket.read()
+            chunky_bacon = response.split("\r\n\r\n")[1]
+            data = JSON.parse(chunky_bacon)
+            @pane_lists[:weather].clear()
+            if data['list']
+                @pane_lists[:weather].add_separator("#{data['city']['name']} (#{data['city']['country']})")
+                day = nil
+                data['list'].each do |entry|
+                    new_day = Time.at(entry['dt']).strftime('%a, %d %b %Y')
+                    if new_day != day
+                        @pane_lists[:weather].add_separator(new_day)
+                        day = new_day
+                    end
+                    message = ''
+                    message += "#{sprintf('%2d', entry['main']['temp'] - 273.15)} C, "
+                    message += entry['weather'].map { |x| x['description'] }.join(', ')
+                    @pane_lists[:weather].add_chat_entry({'name' => Time.at(entry['dt']).strftime('%H:%M'), 'color': 7, 'message' => message})
+                end
+            else
+                @pane_lists[:weather].add_chat_entry({'name' => 'Error:', 'color': 7, 'message' => 'no data received'})
+            end
+            if @panes[@current_pane] == :weather
+                draw_pane()
+            end
+        end
+    end
+
+    def handle_wikipedia_update()
+        if @wikipedia_socket.eof?
+            @wikipedia_socket.close
+            @wikipedia_socket = nil
+        else
+            response = @wikipedia_socket.read()
+            chunky_bacon = response.split("\r\n\r\n")[1]
+            begin
+#                 STDERR.puts response
+                data = JSON.parse(chunky_bacon)
+                @pane_lists[:wikipedia].clear()
+                data['query']['pages'].values.each do |page|
+                    @pane_lists[:wikipedia].add_separator(page['title'])
+                    @pane_lists[:wikipedia].add_chat_entry({'name' => '', 'message' => page['extract']})
+                end
+                @pane_lists[:wikipedia].first_selected()
+            rescue
+                @pane_lists[:wikipedia].clear()
+                @pane_lists[:wikipedia].add_chat_entry({'name' => 'Error:', 'color': 7, 'message' => 'no data received'})
+            end
+            if @panes[@current_pane] == :wikipedia
+                draw_pane()
+            end
+        end
+    end
+
     def main_loop()
         $current_command_mutex = Mutex.new
         $current_command = []
@@ -706,6 +803,14 @@ class CursesMpdPlayer
         mpd_socket = TCPSocket.new('127.0.0.1', 6600)
         mpd_socket.set_encoding('UTF-8')
         response = mpd_socket.gets
+
+        @weather_socket = nil
+        @weather_socket = TCPSocket.new('api.openweathermap.org', 80)
+        @weather_socket.set_encoding('UTF-8')
+        url = "/data/2.5/forecast?id=7290245&appid=#{OPENWEATHERMAP_API_KEY}"
+        @weather_socket.print "GET #{url} HTTP/1.0\r\n\r\n"
+
+        @wikipedia_socket = nil
 
         chat_socket = TCPSocket.new('192.168.106.42', 3000)
         chat_socket.set_encoding('UTF-8')
@@ -761,7 +866,10 @@ class CursesMpdPlayer
         push_command('list album')
         push_command('idle')
         while true do
-            rs, ws, es = IO.select([STDIN, mpd_socket, chat_socket, @pipe_r, @rpipe_r], [], [], 30)
+            fds = [STDIN, mpd_socket, chat_socket, @pipe_r, @rpipe_r]
+            fds << @weather_socket if @weather_socket
+            fds << @wikipedia_socket if @wikipedia_socket
+            rs, ws, es = IO.select(fds, [], [], 30)
             if rs.nil?
                 push_command('noidle')
                 push_command('@ping')
@@ -864,9 +972,37 @@ class CursesMpdPlayer
                                 @pane_editfields[@panes[@current_pane]].backspace()
                                 draw_pane()
                             elsif key.ord == 0xa
-                                chat_socket.puts @pane_editfields[@panes[@current_pane]].string
+                                input = @pane_editfields[@panes[@current_pane]].string
                                 @pane_editfields[@panes[@current_pane]].clear()
-                                draw_pane()
+                                if @panes[@current_pane] == :chat
+                                    chat_socket.puts input
+                                    draw_pane()
+                                elsif @panes[@current_pane] == :weather
+                                    if @weather_socket
+                                        @weather_socket.close
+                                        @weather_socket = nil
+                                    end
+                                    @weather_socket = TCPSocket.new('api.openweathermap.org', 80)
+                                    @weather_socket.set_encoding('UTF-8')
+                                    url = "/data/2.5/forecast?q=#{URI::escape(input.strip)}&appid=#{OPENWEATHERMAP_API_KEY}"
+                                    @weather_socket.print "GET #{url} HTTP/1.0\r\n\r\n"
+                                elsif @panes[@current_pane] == :wikipedia
+                                    if @wikipedia_socket
+                                        @wikipedia_socket.close
+                                        @wikipedia_socket = nil
+                                    end
+
+                                    sock = TCPSocket.new('de.wikipedia.org', 443)
+                                    ctx = OpenSSL::SSL::SSLContext.new
+                                    ctx.set_params(verify_mode: OpenSSL::SSL::VERIFY_PEER)
+                                    @wikipedia_socket = OpenSSL::SSL::SSLSocket.new(sock, ctx).tap do |socket|
+                                        socket.sync_close = true
+                                        socket.connect
+                                    end
+#                                     @wikipedia_socket.set_encoding('UTF-8')
+                                    url = "/w/api.php?format=json&action=query&prop=extracts&exintro=&explaintext=&titles=#{URI::escape(input.strip)}"
+                                    @wikipedia_socket.print "GET #{url} HTTP/1.0\r\nHost: de.wikipedia.org\r\n\r\n"
+                                end
                             end
                         else
                             # this pane has no edit field, we can use shortcuts here
@@ -974,6 +1110,12 @@ class CursesMpdPlayer
                             end
                         end
                     end
+                end
+                if rs.include?(@weather_socket)
+                    handle_weather_update()
+                end
+                if rs.include?(@wikipedia_socket)
+                    handle_wikipedia_update()
                 end
                 if rs.include?(@pipe_r)
                     message = @pipe_r.gets

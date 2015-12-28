@@ -521,7 +521,8 @@ class DevInput
             :comma => ';',
             :dot => ':',
             :slash => '_',
-            :_102nd => '>'
+            :_102nd => '>',
+            :space => ' '
         }
         ('A'..'Z').each { |x| @code_to_char_shift[x.downcase.to_sym] = x }
         ('0'..'9').each_with_index { |x, _| @code_to_char_shift[x.to_sym] = '=!"§$%&/()'[_] }
@@ -535,7 +536,8 @@ class DevInput
             '0'.to_sym => '}',
             :minus => '\\',
             :rightbrace => '~',
-            :_102nd => '|'
+            :_102nd => '|',
+            :q => '@'
         }
     end
 

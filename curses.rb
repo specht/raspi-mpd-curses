@@ -383,7 +383,8 @@ class CursesMpdPlayer
         end
     end
 
-    def initialize()
+    def initialize(mpd_host)
+        @mpd_host = mpd_host
         @keys = {}
         @keys[:arrow_left]  = [0x1b, 0x5b, 0x44]
         @keys[:arrow_right] = [0x1b, 0x5b, 0x43]
@@ -411,7 +412,18 @@ class CursesMpdPlayer
         @keys_char[:UE]     = 'Ü'
         @keys_char[:sz]     = 'ß'
 
-        @panes = [:playlist, :search, :artist, :album, :playlists, :radio, :chat, :wikipedia, :weather, :status]
+        @panes = [
+            :playlist, 
+            #:search, 
+            :artist, 
+            :album, 
+            #:playlists, 
+            :radio, 
+            #:chat, 
+            #:wikipedia, 
+            :weather, 
+            #:status
+        ]
         @pane_titles = {
             :playlist => 'Currently playing',
             :search => 'Search',
@@ -522,7 +534,7 @@ class CursesMpdPlayer
                 @win.setpos(@height - 1, 0)
                 @win.addstr(fit(' Play | Append', @width))
             end
-            @win.attron(color_pair(15) | A_BOLD) do
+            @win.attron(color_pair(11) | A_BOLD) do
                 @win.setpos(@height - 1, 1)
                 @win.addstr('P')
                 @win.setpos(@height - 1, 8)
@@ -777,10 +789,10 @@ class CursesMpdPlayer
                     message = ''
                     message += "#{sprintf('%2d', entry['main']['temp'] - 273.15)} C, "
                     message += entry['weather'].map { |x| x['description'] }.join(', ')
-                    @pane_lists[:weather].add_chat_entry({'name' => Time.at(entry['dt']).strftime('%H:%M'), 'color': 7, 'message' => message})
+                    @pane_lists[:weather].add_chat_entry({'name' => Time.at(entry['dt']).strftime('%H:%M'), 'color' => 7, 'message' => message})
                 end
             else
-                @pane_lists[:weather].add_chat_entry({'name' => 'Error:', 'color': 7, 'message' => 'no data received'})
+                @pane_lists[:weather].add_chat_entry({'name' => 'Error:', 'color' => 7, 'message' => 'no data received'})
             end
             if @panes[@current_pane] == :weather
                 draw_pane()
@@ -806,7 +818,7 @@ class CursesMpdPlayer
                 @pane_lists[:wikipedia].first_selected()
             rescue
                 @pane_lists[:wikipedia].clear()
-                @pane_lists[:wikipedia].add_chat_entry({'name' => 'Error:', 'color': 7, 'message' => 'no data received'})
+                @pane_lists[:wikipedia].add_chat_entry({'name' => 'Error:', 'color' => 7, 'message' => 'no data received'})
             end
             if @panes[@current_pane] == :wikipedia
                 draw_pane()
@@ -822,20 +834,28 @@ class CursesMpdPlayer
         @pipe_r, @pipe_w = IO.pipe
         # refresh pipe
         @rpipe_r, @rpipe_w = IO.pipe
-        mpd_socket = TCPSocket.new('127.0.0.1', 6600)
+        mpd_socket = TCPSocket.new(@mpd_host, 6600)
         mpd_socket.set_encoding('UTF-8')
         response = mpd_socket.gets
 
         @weather_socket = nil
-        @weather_socket = TCPSocket.new('api.openweathermap.org', 80)
-        @weather_socket.set_encoding('UTF-8')
-        url = "/data/2.5/forecast?id=7290245&appid=#{OPENWEATHERMAP_API_KEY}"
-        @weather_socket.print "GET #{url} HTTP/1.0\r\n\r\n"
+        begin
+            @weather_socket = TCPSocket.new('api.openweathermap.org', 80)
+            @weather_socket.set_encoding('UTF-8')
+            url = "/data/2.5/forecast?id=7290245&appid=#{OPENWEATHERMAP_API_KEY}"
+            @weather_socket.print "GET #{url} HTTP/1.0\r\n\r\n"
+        rescue
+
+        end
 
         @wikipedia_socket = nil
 
-        chat_socket = TCPSocket.new('192.168.106.42', 3000)
-        chat_socket.set_encoding('UTF-8')
+        chat_socket = nil
+        begin
+            # chat_socket = TCPSocket.new('192.168.106.42', 3000)
+            # chat_socket.set_encoding('UTF-8')
+        rescue
+        end
         chat_name = 'Anon'
         chat_color = 7
         begin
@@ -844,8 +864,10 @@ class CursesMpdPlayer
             chat_color = info['color']
         rescue
         end
-        chat_socket.puts({:name => chat_name, :color => chat_color}.to_json)
-        chat_socket.puts('@@context')
+        if chat_socket
+            chat_socket.puts({:name => chat_name, :color => chat_color}.to_json)
+            chat_socket.puts('@@context')
+        end
 
         # puts response
 
@@ -870,6 +892,8 @@ class CursesMpdPlayer
             end
         end
 
+        @ignore_keystrokes = false
+
         response = ''
 
         def promote(x)
@@ -890,13 +914,16 @@ class CursesMpdPlayer
 
         @keyboard = DevInput.new "/dev/input/event0"
         # grab keyboard
-        @keyboard.dev.ioctl(1074021776, 1)
+        # if we grab it, we can't wake up from energy saving mode
+        # @keyboard.dev.ioctl(1074021776, 1)
 
         while true do
-            fds = [@keyboard.dev, mpd_socket, chat_socket, @pipe_r, @rpipe_r]
+            fds = [@keyboard.dev, mpd_socket, @pipe_r, @rpipe_r]
             fds << @weather_socket if @weather_socket
             fds << @wikipedia_socket if @wikipedia_socket
-#             STDERR.puts "#{Time.now} IO.select(#{fds.size})"
+            fds << chat_socket if chat_socket
+            # STDERR.puts "Waiting for #{fds.size} file descriptors..."
+            # STDERR.puts "#{Time.now} IO.select(#{fds.size})"
             rs, ws, es = IO.select(fds, [], [], 30)
             if rs.nil?
                 push_command('noidle')
@@ -909,251 +936,271 @@ class CursesMpdPlayer
                         key = event[:event].code_sym
                         modifiers = event[:modifiers]
                         char = event[:char]
-                        if key == :backspace && modifiers[:leftcontrol] && modifiers[:leftalt]
-                            break
-                        end
+#                         if key == :backspace && modifiers[:leftcontrol] && modifiers[:leftalt]
+#                             break
+#                         end
 
-                        if key == :f1
-                            @current_pane = 0
-                            draw_pane()
-                        elsif key == :f2
-                            @current_pane = 1
-                            draw_pane()
-                        elsif key == :f3
-                            @current_pane = 2
-                            draw_pane()
-                        elsif key == :f4
-                            @current_pane = 3
-                            draw_pane()
-                        elsif key == :f5
-                            @current_pane = 4
-                            draw_pane()
-                        elsif key == :f6
-                            @current_pane = 5
-                            draw_pane()
-                        elsif key == :f7
-                            @current_pane = 6
-                            draw_pane()
-                        elsif key == :f8
-                            @current_pane = 7
-                            draw_pane()
-                        elsif key == :f9
-                            @current_pane = 8
-                            draw_pane()
-                        elsif key == :f10
-                            @current_pane = 9
-                            draw_pane()
-                        elsif key == :left
-                            if @current_pane > 0
-                                @current_pane -= 1
+                        if [:f1, :f2, :f3, :f4, :f5, :f6, :f7, :f8, :f9, :f10].include?(key) && modifiers[:leftcontrol] && modifiers[:leftalt]
+                            @ignore_keystrokes = (key != :f1)
+                        elsif !@ignore_keystrokes
+#                         if !@ignore_keystrokes
+                            if key == :f1
+                                @current_pane = 0 if @panes.size > 0
                                 draw_pane()
-                            end
-                        elsif key == :right
-                            if @current_pane < @panes.size - 1
-                                @current_pane += 1
+                            elsif key == :f2
+                                @current_pane = 1 if @panes.size > 1
                                 draw_pane()
-                            end
-                        elsif key == :down
-                            if @pane_lists.include?(@panes[@current_pane])
-                                @pane_lists[@panes[@current_pane]].next_selected()
+                            elsif key == :f3
+                                @current_pane = 2 if @panes.size > 2
                                 draw_pane()
-                            end
-                        elsif key == :up
-                            if @pane_lists.include?(@panes[@current_pane])
-                                @pane_lists[@panes[@current_pane]].prev_selected()
+                            elsif key == :f4
+                                @current_pane = 3 if @panes.size > 3
                                 draw_pane()
-                            end
-                        elsif key == :pagedown
-                            if @pane_lists.include?(@panes[@current_pane])
-                                20.times { @pane_lists[@panes[@current_pane]].next_selected() }
+                            elsif key == :f5
+                                @current_pane = 4 if @panes.size > 4
                                 draw_pane()
-                            end
-                        elsif key == :pageup
-                            if @pane_lists.include?(@panes[@current_pane])
-                                20.times { @pane_lists[@panes[@current_pane]].prev_selected() }
+                            elsif key == :f6
+                                @current_pane = 5 if @panes.size > 5
                                 draw_pane()
-                            end
-                        elsif key == :home
-                            if @pane_lists.include?(@panes[@current_pane])
-                                @pane_lists[@panes[@current_pane]].first_selected()
+                            elsif key == :f7
+                                @current_pane = 6 if @panes.size > 6
                                 draw_pane()
-                            end
-                        elsif key == :end
-                            if @pane_lists.include?(@panes[@current_pane])
-                                @pane_lists[@panes[@current_pane]].last_selected()
+                            elsif key == :f8
+                                @current_pane = 7 if @panes.size > 7
                                 draw_pane()
-                            end
-                        elsif key == :delete
-                            if @panes[@current_pane] == :playlist && !@pane_lists[@panes[@current_pane]].selected().nil?
-                                push_command('noidle')
-                                push_command("delete #{@pane_lists[@panes[@current_pane]].selected()[:key]}")
-                                push_command('idle')
-                            end
-                        elsif key == :esc
-                            # escape pressed!
-                            if @pane_lists[@panes[@current_pane]].nil? || @pane_lists[@panes[@current_pane]].selected().nil?
-                                @current_pane = 0
+                            elsif key == :f9
+                                @current_pane = 8 if @panes.size > 8
                                 draw_pane()
-                            else
-                                @pane_lists[@panes[@current_pane]].set_selected(nil)
+                            elsif key == :f10
+                                @current_pane = 9 if @panes.size > 9
                                 draw_pane()
-                            end
-                        end
-                        found_special_char = false
-    #                     [:ae, :oe, :ue, :AE, :OE, :UE, :sz].each do |_|
-    #                         if test_key(_)
-    #                             x = @keys_char[_]
-    #                             found_special_char = true
-    #                             break
-    #                         end
-    #                     end
-                        if @pane_editfields[@panes[@current_pane]]
-                            # this pane has an edit field
-                            if char
-                                new_char = sfix(char)
-                                sfix(new_char).each_char do |c|
-                                    @pane_editfields[@panes[@current_pane]].add_char(c)
-                                end
-                                draw_pane()
-                            elsif key == :backspace
-                                @pane_editfields[@panes[@current_pane]].backspace()
-                                draw_pane()
-                            elsif key == :enter
-                                input = @pane_editfields[@panes[@current_pane]].string
-                                @pane_editfields[@panes[@current_pane]].clear()
-                                if @panes[@current_pane] == :search
-                                    push_command('noidle')
-                                    push_command("search any \"#{input}\"", {:source => :search, :any => input})
-                                    push_command('idle')
+                            elsif key == :left
+                                if @current_pane > 0
+                                    @current_pane -= 1
                                     draw_pane()
-                                elsif @panes[@current_pane] == :chat
-                                    chat_socket.puts input
+                                end
+                            elsif key == :right
+                                if @current_pane < @panes.size - 1
+                                    @current_pane += 1
                                     draw_pane()
-                                elsif @panes[@current_pane] == :weather
-                                    if @weather_socket
-                                        @weather_socket.close
-                                        @weather_socket = nil
-                                    end
-                                    @weather_socket = TCPSocket.new('api.openweathermap.org', 80)
-                                    @weather_socket.set_encoding('UTF-8')
-                                    url = "/data/2.5/forecast?q=#{URI::escape(input.strip)}&appid=#{OPENWEATHERMAP_API_KEY}"
-                                    @weather_socket.print "GET #{url} HTTP/1.0\r\n\r\n"
-                                elsif @panes[@current_pane] == :wikipedia
-                                    if @wikipedia_socket
-                                        @wikipedia_socket.close
-                                        @wikipedia_socket = nil
-                                    end
-
-                                    sock = TCPSocket.new('de.wikipedia.org', 443)
-                                    ctx = OpenSSL::SSL::SSLContext.new
-                                    ctx.set_params(verify_mode: OpenSSL::SSL::VERIFY_PEER)
-                                    @wikipedia_socket = OpenSSL::SSL::SSLSocket.new(sock, ctx).tap do |socket|
-                                        socket.sync_close = true
-                                        socket.connect
-                                    end
-#                                     @wikipedia_socket.set_encoding('UTF-8')
-                                    url = "/w/api.php?format=json&action=query&prop=extracts&exintro=&explaintext=&titles=#{URI::escape(input.strip)}"
-                                    @wikipedia_socket.print "GET #{url} HTTP/1.0\r\nHost: de.wikipedia.org\r\n\r\n"
                                 end
-                            end
-                        else
-                            # this pane has no edit field, we can use shortcuts here
-                            if key == :s
-                                if @state[:status]
+                            elsif key == :down
+                                if @pane_lists.include?(@panes[@current_pane])
+                                    @pane_lists[@panes[@current_pane]].next_selected()
+                                    draw_pane()
+                                end
+                            elsif key == :up
+                                if @pane_lists.include?(@panes[@current_pane])
+                                    @pane_lists[@panes[@current_pane]].prev_selected()
+                                    draw_pane()
+                                end
+                            elsif key == :pagedown
+                                if @pane_lists.include?(@panes[@current_pane])
+                                    20.times { @pane_lists[@panes[@current_pane]].next_selected() }
+                                    draw_pane()
+                                end
+                            elsif key == :pageup
+                                if @pane_lists.include?(@panes[@current_pane])
+                                    20.times { @pane_lists[@panes[@current_pane]].prev_selected() }
+                                    draw_pane()
+                                end
+                            elsif key == :home
+                                if @pane_lists.include?(@panes[@current_pane])
+                                    @pane_lists[@panes[@current_pane]].first_selected()
+                                    draw_pane()
+                                end
+                            elsif key == :end
+                                if @pane_lists.include?(@panes[@current_pane])
+                                    @pane_lists[@panes[@current_pane]].last_selected()
+                                    draw_pane()
+                                end
+                            elsif key == :delete
+                                if @panes[@current_pane] == :playlist && !@pane_lists[@panes[@current_pane]].selected().nil?
                                     push_command('noidle')
-                                    push_command("random #{1 - @state[:status]['random']}")
+                                    push_command("delete #{@pane_lists[@panes[@current_pane]].selected()[:key]}")
                                     push_command('idle')
                                 end
-                            elsif key == :r
-                                if @state[:status]
-                                    current_code = (~~(@state[:status]['repeat'])) + ((~~(@state[:status]['single'])) << 1);
-                                    current_code += 1;
-                                    current_code = 3 if current_code == 2
-                                    current_code = 0 if current_code > 3
-                                    push_command('noidle')
-                                    push_command("repeat #{(current_code) & 1}")
-                                    push_command("single #{(current_code >> 1) & 1}")
-                                    push_command('idle')
-                                end
-                            elsif key == :space
-                                push_command('noidle')
-                                push_command('pause')
-                                push_command('idle')
-                            elsif key == :dot
-                                push_command('noidle')
-                                push_command('previous')
-                                push_command('idle')
-                                @pane_lists[:playlist].set_selected(nil)
-                            elsif key == :slash
-                                push_command('noidle')
-                                push_command('next')
-                                push_command('idle')
-                                @pane_lists[:playlist].set_selected(nil)
-                            elsif key == :enter
-                                if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
-                                    if @panes[@current_pane] == :playlist
-                                        push_command('noidle')
-                                        push_command("play #{@pane_lists[@panes[@current_pane]].selected()[:key]}")
-                                        push_command('idle')
-                                        @pane_lists[@panes[@current_pane]].set_selected(nil)
-                                    end
+                            elsif key == :esc
+                                # escape pressed!
+                                if @pane_lists[@panes[@current_pane]]
                                     if @panes[@current_pane] == :artist
-                                        filter_artist = @pane_lists[@panes[@current_pane]].selected()[:key][:artist]
                                         push_command('noidle')
-                                        push_command("list album artist \"#{filter_artist}\"", {:source => :artist, :target => :album, :artist => filter_artist})
-                                        push_command("list title artist \"#{filter_artist}\"", {:source => :artist, :target => :title, :artist => filter_artist})
+                                        push_command("list artist")
                                         push_command('idle')
-                                    end
-                                    if @panes[@current_pane] == :album
-                                        filter_album = @pane_lists[@panes[@current_pane]].selected()[:key][:album]
+                                    elsif @panes[@current_pane] == :album
                                         push_command('noidle')
-                                        push_command("list artist album \"#{filter_album}\"", {:source => :album, :target => :artist, :album => filter_album})
-                                        push_command("list title album \"#{filter_album}\"", {:source => :album, :target => :title, :album => filter_album})
+                                        push_command("list album")
                                         push_command('idle')
+                                    else
+                                        @pane_lists[@panes[@current_pane]].set_selected(nil)
+                                        draw_pane()
                                     end
                                 end
-                            elsif key == :p || key == :a
-                                if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
-                                    item = @pane_lists[@panes[@current_pane]].selected()
-                                    if item && item[:key]
-                                        if item[:key][:file]
-                                            url = item[:key][:file]
+                            end
+                            found_special_char = false
+        #                     [:ae, :oe, :ue, :AE, :OE, :UE, :sz].each do |_|
+        #                         if test_key(_)
+        #                             x = @keys_char[_]
+        #                             found_special_char = true
+        #                             break
+        #                         end
+        #                     end
+                            if @pane_editfields[@panes[@current_pane]]
+                                # this pane has an edit field
+                                if char
+                                    new_char = sfix(char)
+                                    sfix(new_char).each_char do |c|
+                                        @pane_editfields[@panes[@current_pane]].add_char(c)
+                                    end
+                                    draw_pane()
+                                elsif key == :backspace
+                                    @pane_editfields[@panes[@current_pane]].backspace()
+                                    draw_pane()
+                                elsif key == :enter
+                                    input = @pane_editfields[@panes[@current_pane]].string
+                                    @pane_editfields[@panes[@current_pane]].clear()
+                                    if @panes[@current_pane] == :search
+                                        push_command('noidle')
+                                        push_command("search any \"#{input}\"", {:source => :search, :any => input})
+                                        push_command('idle')
+                                        draw_pane()
+                                    elsif @panes[@current_pane] == :chat
+                                        chat_socket.puts input
+                                        draw_pane()
+                                    elsif @panes[@current_pane] == :weather
+                                        if @weather_socket
+                                            @weather_socket.close
+                                            @weather_socket = nil
+                                        end
+                                        @weather_socket = TCPSocket.new('api.openweathermap.org', 80)
+                                        @weather_socket.set_encoding('UTF-8')
+                                        url = "/data/2.5/forecast?q=#{URI::escape(input.strip)}&appid=#{OPENWEATHERMAP_API_KEY}"
+                                        @weather_socket.print "GET #{url} HTTP/1.0\r\n\r\n"
+                                    elsif @panes[@current_pane] == :wikipedia
+                                        if @wikipedia_socket
+                                            @wikipedia_socket.close
+                                            @wikipedia_socket = nil
+                                        end
+
+                                        sock = TCPSocket.new('de.wikipedia.org', 443)
+                                        ctx = OpenSSL::SSL::SSLContext.new
+                                        ctx.set_params(verify_mode: OpenSSL::SSL::VERIFY_PEER)
+                                        @wikipedia_socket = OpenSSL::SSL::SSLSocket.new(sock, ctx).tap do |socket|
+                                            socket.sync_close = true
+                                            socket.connect
+                                        end
+    #                                     @wikipedia_socket.set_encoding('UTF-8')
+                                        url = "/w/api.php?format=json&action=query&prop=extracts&exintro=&explaintext=&titles=#{URI::escape(input.strip)}"
+                                        @wikipedia_socket.print "GET #{url} HTTP/1.0\r\nHost: de.wikipedia.org\r\n\r\n"
+                                    end
+                                end
+                            else
+                                # this pane has no edit field, we can use shortcuts here
+                                if key == :s
+                                    if @state[:status]
+                                        push_command('noidle')
+                                        push_command("random #{1 - @state[:status]['random']}")
+                                        push_command('idle')
+                                    end
+                                elsif key == :r
+                                    if @state[:status]
+                                        current_code = (~~(@state[:status]['repeat'])) + ((~~(@state[:status]['single'])) << 1);
+                                        current_code += 1;
+                                        current_code = 3 if current_code == 2
+                                        current_code = 0 if current_code > 3
+                                        push_command('noidle')
+                                        push_command("repeat #{(current_code) & 1}")
+                                        push_command("single #{(current_code >> 1) & 1}")
+                                        push_command('idle')
+                                    end
+                                elsif key == :space
+                                    push_command('noidle')
+                                    push_command('pause')
+                                    push_command('idle')
+                                elsif key == :dot
+                                    push_command('noidle')
+                                    push_command('previous')
+                                    push_command('idle')
+                                    @pane_lists[:playlist].set_selected(nil)
+                                elsif key == :slash
+                                    push_command('noidle')
+                                    push_command('next')
+                                    push_command('idle')
+                                    @pane_lists[:playlist].set_selected(nil)
+                                elsif key == :semicolon
+                                    push_command('noidle')
+                                    push_command('volume -5')
+                                    push_command('idle')
+                                elsif key == :apostrophe
+                                    push_command('noidle')
+                                    push_command('volume +5')
+                                    push_command('idle')
+                                elsif key == :enter
+                                    if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
+                                        if @panes[@current_pane] == :playlist
                                             push_command('noidle')
-                                            if key == :p
-                                                push_command('clear')
-                                            end
-                                            push_command("add \"#{url}\"")
-                                            if key == :p
-                                                push_command('play')
-                                            end
+                                            push_command("play #{@pane_lists[@panes[@current_pane]].selected()[:key]}")
                                             push_command('idle')
-                                            if key == :p
-                                                @current_pane = 0
-                                                draw_pane()
-                                            end
-                                        elsif item[:key][:playlist]
-                                            playlist = item[:key][:playlist]
+                                            @pane_lists[@panes[@current_pane]].set_selected(nil)
+                                        end
+                                        if @panes[@current_pane] == :artist
+                                            filter_artist = @pane_lists[@panes[@current_pane]].selected()[:key][:artist]
                                             push_command('noidle')
-                                            push_command("listplaylist \"#{playlist}\"", {:source => :playlists, :command => ((key == 'p' || key == 'P') ? :play : :append)})
+                                            push_command("list album artist \"#{filter_artist}\"", {:source => :artist, :target => :album, :artist => filter_artist})
+                                            push_command("list title artist \"#{filter_artist}\"", {:source => :artist, :target => :title, :artist => filter_artist})
                                             push_command('idle')
-                                            if key == :p
-                                                @current_pane = 0
-                                                draw_pane()
-                                            end
-                                        else
-                                            filters = {}
-                                            [:artist, :album, :title].each do |key|
-                                                if item[:key].include?(key)
-                                                    filters[key] = item[:key][key]
-                                                end
-                                            end
-                                            if filters.size > 0
+                                        end
+                                        if @panes[@current_pane] == :album
+                                            filter_album = @pane_lists[@panes[@current_pane]].selected()[:key][:album]
+                                            push_command('noidle')
+                                            push_command("list artist album \"#{filter_album}\"", {:source => :album, :target => :artist, :album => filter_album})
+                                            push_command("list title album \"#{filter_album}\"", {:source => :album, :target => :title, :album => filter_album})
+                                            push_command('idle')
+                                        end
+                                    end
+                                elsif key == :p || key == :a
+                                    if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
+                                        item = @pane_lists[@panes[@current_pane]].selected()
+                                        if item && item[:key]
+                                            if item[:key][:file]
+                                                url = item[:key][:file]
                                                 push_command('noidle')
-                                                push_command("find #{filters.map{ |k, v| "#{k} \"#{v}\""}.join(' ')}", {:source => :artist, :command => ((key == 'p' || key == 'P') ? :play : :append)})
+                                                if key == :p
+                                                    push_command('clear')
+                                                end
+                                                push_command("add \"#{url}\"")
+                                                if key == :p
+                                                    push_command('play')
+                                                end
                                                 push_command('idle')
                                                 if key == :p
                                                     @current_pane = 0
                                                     draw_pane()
+                                                end
+                                            elsif item[:key][:playlist]
+                                                playlist = item[:key][:playlist]
+                                                push_command('noidle')
+                                                push_command("listplaylist \"#{playlist}\"", {:source => :playlists, :command => ((key == :p) ? :play : :append)})
+                                                push_command('idle')
+                                                if key == :p
+                                                    @current_pane = 0
+                                                    draw_pane()
+                                                end
+                                            else
+                                                filters = {}
+                                                [:artist, :album, :title].each do |key|
+                                                    if item[:key].include?(key)
+                                                        filters[key] = item[:key][key]
+                                                    end
+                                                end
+                                                if filters.size > 0
+                                                    push_command('noidle')
+                                                    push_command("find #{filters.map{ |k, v| "#{k} \"#{v}\""}.join(' ')}", {:source => :artist, :command => ((key == :p) ? :play : :append)})
+                                                    push_command('idle')
+                                                    if key == :p
+                                                        @current_pane = 0
+                                                        draw_pane()
+                                                    end
                                                 end
                                             end
                                         end
@@ -1324,5 +1371,8 @@ class CursesMpdPlayer
 
 end
 
-player = CursesMpdPlayer.new
+player = CursesMpdPlayer.new(ARGV.first || '127.0.0.1')
 player.main_loop
+
+# eat up characters from STDIN so they won't end up in bash after the program has ended
+STDIN.read

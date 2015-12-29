@@ -44,13 +44,13 @@ def sfix(s)
 end
 
 def fit(s, width)
-    s = sfix(s)
+    # s = sfix(s)
     return s[0, width] if s.size > width
     return sprintf("%-#{width}s", s)
 end
 
 def rfit(s, width)
-    s = sfix(s)
+    # s = sfix(s)
     return s[0, width] if s.size > width
     return sprintf("%#{width}s", s)
 end
@@ -129,7 +129,10 @@ class List
     def next_selected()
         return if @first_selectable_entry.nil?
         @selected_entry = @highlighted_entry if @selected_entry.nil?
-        @selected_entry ||= 0
+        if @selected_entry.nil?
+            @selected_entry = @first_selectable_entry
+            return
+        end
         while true
             set_selected(@selected_entry + 1)
             break if @selected_entry.nil?
@@ -161,7 +164,7 @@ class List
     end
 
     def add_separator(label)
-        @entries << {:type => :separator, :label => label}
+        @entries << {:type => :separator, :label => sfix(label)}
     end
 
     def add_entry(key, labels)
@@ -169,6 +172,7 @@ class List
         @last_selectable_entry = @entries.size
         @index_for_key[key] = @entries.size
         labels = [labels] unless labels.class == Array
+        labels.map! { |s| sfix(s) }
         @entries << {:type => :entry, :labels => labels, :key => key}
         labels.each_with_index do |x, _|
             x ||= ''
@@ -197,6 +201,16 @@ class List
         print_name = true
         if (!@entries.empty?) && @entries.last[:entry] && (@entries.last[:entry]['name'] == entry['name'])
             print_name = false
+        end
+        unless entry['name'] && entry['name'].size > 0
+            print_name = false
+        end
+        if entry['timestamp']
+            timestamp_label = Time.at(entry['timestamp']).strftime('%a, %d %b %Y')
+            if timestamp_label != @current_timestamp_label
+                add_separator(timestamp_label)
+            end
+            @current_timestamp_label = timestamp_label
         end
         complete_line = ''
         if print_name
@@ -272,9 +286,9 @@ class List
                         @win.addstr(s)
                     end
                 else
+                    # it's a header!
                     @win.attron(color_pair(63) | A_BOLD) do
-                        s = ''
-                        s += fit(entry[:label], @width)
+                        s = fit(entry[:label], @width)
                         @win.addstr(s)
                     end
                 end
@@ -284,6 +298,7 @@ class List
                 end
             end
         end
+        @win.refresh
     end
 end
 
@@ -324,6 +339,7 @@ class EditField
             @win.addstr(fit(@string[offset, remaining_width], @width - 3))
             @win.setpos(@height - 1, @string.size + 3)
         end
+        @win.refresh
     end
 
 end
@@ -421,11 +437,11 @@ class CursesMpdPlayer
             :album, 
             #:playlists, 
             :radio, 
-            #:chat, 
-            #:wikipedia, 
+            :chat, 
+            :wikipedia, 
             :weather, 
             :games,
-            #:status
+            :status
         ]
         @pane_titles = {
             :playlist => 'Currently playing',
@@ -479,6 +495,7 @@ class CursesMpdPlayer
         @pane_lists[:games] = List.new(@win, @width, @height, 3, @height - 1)
         @pane_lists[:games].add_entry({:command => '/home/pi/2048'}, '2048')
         @pane_lists[:games].add_entry({:command => '/home/pi/vitetris-0.57/tetris'}, 'vitetris')
+        @pane_lists[:status] = List.new(@win, @width, @height, 3, @height - 1)
 
         @artist_label = ScrollLabel.new(@width - 8)
         @title_label = ScrollLabel.new(@width - 8)
@@ -493,8 +510,8 @@ class CursesMpdPlayer
 #         Curses.nonl()
         Curses.cbreak()
         Curses.start_color()
-        @width = Curses.cols
-        @height = Curses.lines
+        @width ||= Curses.cols
+        @height ||= Curses.lines
         @width = 20 if @width < 20
 #         @height = 20 if @height < 20
 
@@ -506,7 +523,7 @@ class CursesMpdPlayer
         Curses.curs_set(0)
 
         # init window
-        @win = Curses::Window.new(@height, @width, 0, 0)
+        @win ||= Curses::Window.new(@height, @width, 0, 0)
         @win.nodelay = 1
         @win.keypad = true
     end
@@ -522,6 +539,22 @@ class CursesMpdPlayer
         m = s / 60
         s -= m * 60
         return sprintf('%d:%02d', m, s)
+    end
+
+    def s_to_days_h_m_s(s)
+        s ||= 0
+        orig_s = s
+        days = s / 60 / 60 / 24
+        s -= days * 60 * 60 * 24
+        h = s / 60 / 60
+        s -= h * 60 * 60
+        m = s / 60
+        s -= m * 60
+        if days > 0
+            return sprintf("%1.1f days", orig_s / 60.0 / 60.0 / 24.0)
+        else
+            return sprintf('%d:%02d', m, s)
+        end
     end
 
     def draw_pane()
@@ -543,7 +576,7 @@ class CursesMpdPlayer
         @win.attron(color_pair(38) | A_NORMAL) do
             @win.addstr('_' * (@width - end_x))
         end
-        (@height - 3).times { @win.addstr(' ' * @width) }
+        # (@height - 3).times { @win.addstr('_' * @width) }
         @pane_lists[@panes[@current_pane]].render() if @pane_lists[@panes[@current_pane]]
         if @panes[@current_pane] == :artist || @panes[@current_pane] == :album ||
            @panes[@current_pane] == :playlists || @panes[@current_pane] == :radio
@@ -583,6 +616,19 @@ class CursesMpdPlayer
         end
         if data[:from_first] == 'stats'
             @state[:stats] = data[:data]
+            @pane_lists[:status].add_separator('Database status')
+            @pane_lists[:status].add_chat_entry({'name' => '', 'message' => "Artists: #{@state[:stats]['artists']}"})
+            @pane_lists[:status].add_chat_entry({'name' => '', 'message' => "Albums: #{@state[:stats]['albums']}"})
+            @pane_lists[:status].add_chat_entry({'name' => '', 'message' => "Songs: #{@state[:stats]['songs']}"})
+            @pane_lists[:status].add_chat_entry({'name' => '', 'message' => "Total play time: #{s_to_days_h_m_s(@state[:stats]['db_playtime'])}"})
+            #uptime: 1209
+            #playtime: 1206
+            #artists: 9
+            #albums: 35
+            #songs: 452
+            #db_playtime: 103798
+            #db_update: 1451401344
+
         end
         if data[:from_first] == 'playlistinfo'
             @state[:playlist] = data[:data]
@@ -774,8 +820,12 @@ class CursesMpdPlayer
                 s = 'Shuffle    '
                 @win.addstr(s)
                 x += s.size
-                @win.addstr(' ' * (@width - x))
+                @win.addstr(' ' * (@width - x - 5))
             end
+            @win.attron(color_pair(9) | A_BOLD) do
+                @win.addstr(sprintf('%3d%% ', @state[:status]['volume']))
+            end
+            # STDERR.puts @state.to_yaml
         end
         @win.attron(color_pair(35) | A_BOLD) do
             @win.setpos(1, @width - 6)
@@ -869,8 +919,8 @@ class CursesMpdPlayer
 
         chat_socket = nil
         begin
-            # chat_socket = TCPSocket.new('192.168.106.42', 3000)
-            # chat_socket.set_encoding('UTF-8')
+            chat_socket = TCPSocket.new('h2224271.stratoserver.net', 3000)
+            chat_socket.set_encoding('UTF-8')
         rescue
         end
         chat_name = 'Anon'
@@ -882,6 +932,7 @@ class CursesMpdPlayer
         rescue
         end
         if chat_socket
+            chat_socket.write('TH2pMt1iEvan3wWzTlJJ6c')
             chat_socket.puts({:name => chat_name, :color => chat_color}.to_json)
             chat_socket.puts('@@context')
         end
@@ -927,6 +978,7 @@ class CursesMpdPlayer
         push_command('listplaylists')
         push_command('list artist')
         push_command('list album')
+        push_command('stats')
         push_command('idle')
 
         @keyboard = DevInput.new "/dev/input/event0"
@@ -1136,21 +1188,31 @@ class CursesMpdPlayer
                                     push_command('idle')
                                 elsif key == :dot
                                     push_command('noidle')
-                                    push_command('previous')
+                                    if modifiers[:leftshift] || modifiers[:rightshift]
+                                        push_command('seekcur -10')
+                                    else
+                                        push_command('previous')
+                                        @pane_lists[:playlist].set_selected(nil)
+                                    end
                                     push_command('idle')
-                                    @pane_lists[:playlist].set_selected(nil)
                                 elsif key == :slash
                                     push_command('noidle')
-                                    push_command('next')
+                                    if modifiers[:leftshift] || modifiers[:rightshift]
+                                        push_command('seekcur +10')
+                                    else
+                                        push_command('next')
+                                        @pane_lists[:playlist].set_selected(nil)
+                                    end
                                     push_command('idle')
-                                    @pane_lists[:playlist].set_selected(nil)
                                 elsif key == :semicolon
                                     push_command('noidle')
                                     push_command('volume -5')
+                                    push_command('status')
                                     push_command('idle')
                                 elsif key == :apostrophe
                                     push_command('noidle')
                                     push_command('volume +5')
+                                    push_command('status')
                                     push_command('idle')
                                 elsif key == :enter
                                     if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
@@ -1179,8 +1241,8 @@ class CursesMpdPlayer
                                             curses_teardown()
                                             $stdin.iflush
                                             system(command)
-                                            $stdin.iflush
                                             curses_init()
+                                            $stdin.iflush
                                             draw_pane()
                                         end
                                     end

@@ -2,6 +2,7 @@
 
 require 'curses'
 require 'date'
+require 'io/console'
 require 'json'
 require './libdevinput.rb'
 require 'openssl'
@@ -223,6 +224,7 @@ class List
     end
 
     def render()
+        # STDERR.puts "#{Time.now.to_s} DRAWING LIST"
         (@y0..@y1).each do |y|
             @win.setpos(y, 0)
             yo = y - @y0 + @scroll_offset
@@ -422,6 +424,7 @@ class CursesMpdPlayer
             #:chat, 
             #:wikipedia, 
             :weather, 
+            :games,
             #:status
         ]
         @pane_titles = {
@@ -434,6 +437,7 @@ class CursesMpdPlayer
             :chat => 'Chat',
             :wikipedia => 'Wikipedia',
             :weather => 'Weather',
+            :games => 'Games',
             :status => 'Status'
         }
         @current_pane = 0
@@ -446,28 +450,7 @@ class CursesMpdPlayer
         @state[:status] = nil
         @state[:stats] = nil
 
-        # init curses
-        Curses.init_screen()
-        Curses.noecho()
-#         Curses.nonl()
-        Curses.cbreak()
-        Curses.start_color()
-        @width = Curses.cols
-        @height = Curses.lines
-        @width = 20 if @width < 20
-#         @height = 20 if @height < 20
-
-        (0..7).each do |y|
-            (0..7).each do |x|
-                Curses.init_pair(y * 8 + x, x, y)
-            end
-        end
-        Curses.curs_set(0)
-
-        # init window
-        @win = Curses::Window.new(@height, @width, 0, 0)
-        @win.nodelay = 1
-        @win.keypad = true
+        curses_init()
 
         @spinner = '/-\\|'
         @spinner_index = 0
@@ -493,11 +476,45 @@ class CursesMpdPlayer
         @pane_editfields[:chat] = EditField.new(@win, @width, @height)
         @pane_editfields[:wikipedia] = EditField.new(@win, @width, @height)
         @pane_editfields[:weather] = EditField.new(@win, @width, @height)
+        @pane_lists[:games] = List.new(@win, @width, @height, 3, @height - 1)
+        @pane_lists[:games].add_entry({:command => '/home/pi/2048'}, '2048')
+        @pane_lists[:games].add_entry({:command => '/home/pi/vitetris-0.57/tetris'}, 'vitetris')
 
         @artist_label = ScrollLabel.new(@width - 8)
         @title_label = ScrollLabel.new(@width - 8)
 
         draw_pane()
+    end
+
+    def curses_init()
+        # init curses
+        Curses.init_screen()
+        Curses.noecho()
+#         Curses.nonl()
+        Curses.cbreak()
+        Curses.start_color()
+        @width = Curses.cols
+        @height = Curses.lines
+        @width = 20 if @width < 20
+#         @height = 20 if @height < 20
+
+        (0..7).each do |y|
+            (0..7).each do |x|
+                Curses.init_pair(y * 8 + x, x, y)
+            end
+        end
+        Curses.curs_set(0)
+
+        # init window
+        @win = Curses::Window.new(@height, @width, 0, 0)
+        @win.nodelay = 1
+        @win.keypad = true
+    end
+
+    def curses_teardown()
+        # @win.close
+        # @win = nil
+        Curses::close_screen()
     end
 
     def s_to_h_m_s(s)
@@ -1157,6 +1174,15 @@ class CursesMpdPlayer
                                             push_command("list title album \"#{filter_album}\"", {:source => :album, :target => :title, :album => filter_album})
                                             push_command('idle')
                                         end
+                                        if @panes[@current_pane] == :games
+                                            command = @pane_lists[@panes[@current_pane]].selected()[:key][:command]
+                                            curses_teardown()
+                                            $stdin.iflush
+                                            system(command)
+                                            $stdin.iflush
+                                            curses_init()
+                                            draw_pane()
+                                        end
                                     end
                                 elsif key == :p || key == :a
                                     if @pane_lists.include?(@panes[@current_pane]) && !(@pane_lists[@panes[@current_pane]].selected().nil?)
@@ -1375,4 +1401,4 @@ player = CursesMpdPlayer.new(ARGV.first || '127.0.0.1')
 player.main_loop
 
 # eat up characters from STDIN so they won't end up in bash after the program has ended
-STDIN.read
+$stdin.iflush
